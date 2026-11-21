@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/hushink/olaya/compare/olaya-cli-v0.1.1...olaya-cli-v0.1.2) - 2026-11-21
+
+### Added
+
+- default Hugging Face downloads to hf-mirror.com
+
 ## [0.1.1](https://github.com/hushink/olaya/compare/olaya-cli-v0.1.0...olaya-cli-v0.1.1) - 2026-11-21
 
 ### Fixed
