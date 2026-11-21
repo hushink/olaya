@@ -159,13 +159,11 @@ max_batch = 8
 
     #[test]
     fn resolves_relative_paths_against_the_config_directory() {
-        assert_eq!(
-            resolve_path(Path::new("C:/workspace"), Path::new("models")),
-            PathBuf::from("C:/workspace/models")
-        );
-        assert_eq!(
-            resolve_path(Path::new("C:/workspace"), Path::new("C:/models")),
-            PathBuf::from("C:/models")
-        );
+        let base = Path::new("config-dir");
+        assert_eq!(resolve_path(base, Path::new("models")), base.join("models"));
+        let absolute = std::env::current_dir()
+            .expect("current directory")
+            .join("models");
+        assert_eq!(resolve_path(base, &absolute), absolute);
     }
 }
