@@ -21,6 +21,17 @@ release_always = false
 semver_check = true
 pr_labels = ["type: release"]
 
+# cargo-semver-checks builds with --all-features, which pulls the macOS-only
+# objc2 dependency through `metal` on Linux. Keep the check for the
+# platform-neutral core and SDK crates only.
+[[package]]
+name = "olaya"
+semver_check = false
+
+[[package]]
+name = "olaya-candle"
+semver_check = false
+
 # Workspace-only packages: no release PR, tag, changelog, or publish.
 [[package]]
 name = "xtask"
