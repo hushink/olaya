@@ -1,0 +1,132 @@
+name: Release-plz
+
+# release-plz maintains the release PR and publishes versions that were merged
+# into Cargo.toml. The release job then attaches registry-catalog.json to every
+# GitHub Release it creates, because releases created with GITHUB_TOKEN do not
+# trigger the separate Release catalog workflow.
+#
+# Publishing is token-first, then OIDC-only. crates.io cannot create new crates
+# via trusted publishing, so while CRATES_IO_TRUSTED_PUBLISHING is unset/false
+# the release job uses CARGO_REGISTRY_TOKEN. After the first release exists,
+# configure a trusted publisher for each crate (owner hushink, repo olaya,
+# workflow release-plz.yml, no environment), set the repository variable
+# CRATES_IO_TRUSTED_PUBLISHING=true, and delete the token secret.
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-plz-release:
+    name: Release-plz release
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'hushink'
+    permissions:
+      contents: write
+      pull-requests: read
+      id-token: write
+    # Serialize with the manual Release catalog workflow so two jobs never
+    # upload the same release asset concurrently.
+    concurrency:
+      group: release-assets
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Bootstrap path: a token is required only until every crate exists.
+      - name: Run release-plz (token publish)
+        id: release_plz_token
+        if: vars.CRATES_IO_TRUSTED_PUBLISHING != 'true'
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
+        with:
+          command: release
+          version: "0.4.3"
+        env:
+          # Optional PAT/App token so release PRs trigger CI and tags trigger
+          # other workflows; GITHUB_TOKEN is the fallback.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # Steady state: exchange the GitHub OIDC token for a short-lived
+      # crates.io publish token; no long-lived registry secret is used.
+      - name: Run release-plz (trusted publishing)
+        id: release_plz_oidc
+        if: vars.CRATES_IO_TRUSTED_PUBLISHING == 'true'
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
+        with:
+          command: release
+          version: "0.4.3"
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build registry-catalog.json
+        if: steps.release_plz_token.outputs.releases_created == 'true' || steps.release_plz_oidc.outputs.releases_created == 'true'
+        run: >
+          cargo run -p xtask --
+          sync-registry
+          --output "$RUNNER_TEMP/registry-catalog.json"
+
+      - name: Validate registry-catalog.json
+        if: steps.release_plz_token.outputs.releases_created == 'true' || steps.release_plz_oidc.outputs.releases_created == 'true'
+        run: >
+          jq -e '.schema_version == 1 and ((.manifests | length) > 0)'
+          "$RUNNER_TEMP/registry-catalog.json" > /dev/null
+
+      # If this fails after releases were created, rerun the "Release catalog"
+      # workflow with the tag; it uploads the same asset with --clobber.
+      - name: Attach catalog to new releases
+        if: steps.release_plz_token.outputs.releases_created == 'true' || steps.release_plz_oidc.outputs.releases_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASES: ${{ steps.release_plz_token.outputs.releases || steps.release_plz_oidc.outputs.releases }}
+        run: |
+          set -euo pipefail
+          count=$(jq 'length' <<< "$RELEASES")
+          if [ "$count" -eq 0 ]; then
+            echo "release-plz reported releases_created but returned no releases" >&2
+            exit 1
+          fi
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "attaching registry-catalog.json to $tag"
+            gh release upload "$tag" "$RUNNER_TEMP/registry-catalog.json" --clobber
+          done < <(jq -r '.[].tag' <<< "$RELEASES")
+
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'hushink'
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run release-plz
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
+        with:
+          command: release-pr
+          version: "0.4.3"
+        env:
+          # release-pr only edits the release PR; it does not publish.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}

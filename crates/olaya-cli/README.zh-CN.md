@@ -32,35 +32,6 @@ Windows 上请在 **x64 Native Tools Command Prompt** 中运行 CUDA 安装命�
 | `olaya models stored/manifest/verify` | 查看 OCI 内容存储 |
 | `olaya doctor` | 输出路径、目录来源和诊断信息 |
 
-## 配置文件
-
-`serve`、`ask` 和模型命令共享一份 TOML 配置。CLI 依次查找 `./olaya.toml`、`./sys1.toml`、
-`~/.olaya/config.toml`；可用 `--config` 或 `OLAYA_CONFIG` 指定其他文件。相对路径相对于配置文件
-所在目录解析。
-
-```toml
-[engine]
-device = "cuda"
-dtype = "f16"
-default_model = "laya:latest"
-
-[serve]
-host = "127.0.0.1"
-port = 11435
-max_batch = 32
-batch_wait_ms = 2
-
-[hub]
-hf_endpoint = "https://hf-mirror.com"
-
-[registry]
-# dir = "./registry"
-# store = false
-```
-
-CLI 参数覆盖环境变量，环境变量覆盖配置文件。`olaya doctor` 会输出当前加载的配置路径和生效的
-存储设置。
-
 ## 提问
 
 ```sh

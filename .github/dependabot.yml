@@ -1,0 +1,64 @@
+# yaml-language-server: $schema=https://json.schemastore.org/dependabot-2.0.json
+#
+# Dependabot version updates. Alerts and security updates themselves are
+# enabled in repository Settings -> Code security; this file only configures
+# version updates and optional security-update grouping.
+#
+# `Cargo.lock` must be committed on the default branch for Cargo updates.
+# Review dependency PRs against rust-version = "1.92" in Cargo.toml.
+# Dependabot commits use chore/ci so release-plz's conventional-commit
+# analysis does not treat them as features.
+
+version: 2
+
+updates:
+  # One root Cargo.lock covers the entire workspace.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 5
+      semver-patch-days: 3
+    groups:
+      # candle-core, candle-nn, and candle-transformers must move together.
+      candle:
+        patterns: ["candle-*"]
+        update-types: ["minor", "patch"]
+      # Low-risk patch updates across the rest of the dependency graph.
+      patch-updates:
+        update-types: ["patch"]
+      # Group security patches/minors; major security updates stay individual.
+      security-updates:
+        applies-to: "security-updates"
+        patterns: ["*"]
+        update-types: ["patch", "minor"]
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore"
+      include: "scope"
+    labels:
+      - "type: dependencies"
+
+  # actions/checkout, dtolnay/rust-toolchain, Swatinem/rust-cache, and
+  # release-plz/action (including its pinned SHA) in .github/workflows.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      time: "09:00"
+      timezone: "UTC"
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "type: dependencies"
+      - "area: ci"

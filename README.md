@@ -151,35 +151,6 @@ Useful server options:
 > `--allow-unauthenticated`). The server speaks HTTP; terminate TLS at a reverse proxy when exposing
 > it outside a trusted network.
 
-### Configuration file
-
-`serve`, `ask`, and the model commands share a TOML configuration. The CLI looks for `./olaya.toml`,
-then `./sys1.toml`, then `~/.olaya/config.toml`; override the path with `--config` or
-`OLAYA_CONFIG`. Relative paths are resolved against the configuration file.
-
-```toml
-[engine]
-device = "cuda"
-dtype = "f16"
-default_model = "laya:latest"
-
-[serve]
-host = "127.0.0.1"
-port = 11435
-max_batch = 32
-batch_wait_ms = 2
-
-[hub]
-hf_endpoint = "https://hf-mirror.com"
-
-[registry]
-# dir = "./registry"
-# store = false
-```
-
-Precedence is CLI flag > environment variable > file value > built-in default. Run
-`olaya doctor` to print the loaded configuration path and effective storage settings.
-
 ### Use it as a Rust library
 
 ```toml

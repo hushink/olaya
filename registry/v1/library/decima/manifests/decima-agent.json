@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "name": "decima-agent",
+  "aliases": ["decima:agent"],
+  "family": "decima",
+  "engine": "candle",
+  "arch": "modernbert",
+  "format": "safetensors",
+  "layout": "decima-late-interaction-v2",
+  "subfolder": "pytorch",
+  "files": [
+    {
+      "path": "decima.json",
+      "role": "decision",
+      "sha256": "fe9f7b1dc698153150f0cef1e281039ba273f0cd060799b7884a2188207cf8c2",
+      "size": 315
+    },
+    {
+      "path": "encoder/config.json",
+      "role": "config",
+      "sha256": "0cf300f2c1b3e3edb4cb2898b3a95520c4feb7c43d6f5440720e72826be5ffaa",
+      "size": 1898
+    },
+    {
+      "path": "encoder/tokenizer.json",
+      "role": "tokenizer",
+      "sha256": "d941237f7b665542273cd22102ae14fdacf54d3aaf0bd45da55022c46b4cc006",
+      "size": 34363440
+    },
+    {
+      "path": "encoder/model.safetensors",
+      "role": "weights",
+      "sha256": "c86fb570cd37a4909bf57f81afbde282bc8d31a9f51db3850a43511432bf439c",
+      "size": 1227771776
+    },
+    {
+      "path": "head.safetensors",
+      "role": "weights",
+      "sha256": "98fc67d8969c9009b5ced9f81a02e6d4d39891cc391ed883d578311f9e26b594",
+      "size": 56748532
+    }
+  ],
+  "calibration_mode": "raw",
+  "capabilities": {
+    "noul": true,
+    "choice": true,
+    "score": true,
+    "box": false,
+    "vision": false,
+    "ordinal": true
+  },
+  "license": "Apache-2.0",
+  "description": "Decima agent late-interaction decision model (mmBERT-base, 8192-token states)",
+  "source": "hf://amyrmahdy/decima-agent",
+  "revision": "652d90ac9d33088edd730692c95f1da381cb9174"
+}

@@ -1,0 +1,44 @@
+# release-plz configuration.
+#
+# The release PR bumps the workspace version and updates per-crate changelogs.
+# Merging it lets the release job publish unpublished versions, create
+# per-package tags, and create GitHub Releases. The release workflow then
+# attaches registry-catalog.json to every release it creates.
+#
+# All publishable crates inherit [workspace.package].version, so release-plz
+# updates them together.
+
+[workspace]
+allow_dirty = false
+changelog_update = true
+dependencies_update = false
+git_release_enable = true
+git_tag_enable = true
+# Publish only after the release PR is merged (non-squash merge), not on every
+# push. The first import therefore creates a release PR instead of publishing
+# 0.1.0 immediately.
+release_always = false
+semver_check = true
+pr_labels = ["type: release"]
+
+# cargo-semver-checks builds with --all-features, which pulls the macOS-only
+# objc2 dependency through `metal` on Linux. Keep the check for the
+# platform-neutral core and SDK crates only.
+[[package]]
+name = "olaya"
+semver_check = false
+
+[[package]]
+name = "olaya-candle"
+semver_check = false
+
+# Workspace-only packages: no release PR, tag, changelog, or publish.
+[[package]]
+name = "xtask"
+release = false
+publish = false
+
+[[package]]
+name = "olaya-conformance"
+release = false
+publish = false

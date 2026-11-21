@@ -1,0 +1,164 @@
+[
+  {
+    "id": "nli/three",
+    "state": "I was charged twice for my subscription this month. Please refund the extra charge.",
+    "questions": {
+      "billing": {"type": "noul", "instructions": "Is this message about billing?"},
+      "tone": {
+        "type": "choice",
+        "instructions": "What is the tone of this message?",
+        "criteria": {
+          "angry": "An upset or hostile message",
+          "calm": "A neutral or polite message"
+        }
+      },
+      "urgency": {
+        "type": "score",
+        "instructions": "How urgent is this message?",
+        "criteria": ["Can wait", "Needs attention this week", "Needs attention today"]
+      }
+    }
+  },
+  {
+    "id": "nli/json_state",
+    "state": {"ticket": {"id": 4411, "subject": "Duplicate charge"}, "amount": 19.99, "flags": [true, false, null]},
+    "questions": {
+      "billing": {"type": "noul", "instructions": {"ask": "is this about billing?"}},
+      "team": {
+        "type": "choice",
+        "instructions": "Which team?",
+        "criteria": {"billing": "charges", "technical": null}
+      }
+    }
+  },
+  {
+    "id": "nli/array_state",
+    "state": [1, "two", {"three": 3.0}, ["nested"]],
+    "questions": {
+      "billing": {"type": "noul", "instructions": null}
+    }
+  },
+  {
+    "id": "nli/unicode_state",
+    "state": "我这个月被重复扣款了，请退还多扣的费用。",
+    "questions": {
+      "tone": {
+        "type": "choice",
+        "instructions": "这条消息的语气是什么？",
+        "criteria": {"angry": "愤怒或敌对的消息", "calm": "中性或礼貌的消息"}
+      }
+    }
+  },
+  {
+    "id": "nli/empty_state",
+    "state": "",
+    "questions": {
+      "q": {"type": "noul", "instructions": ""}
+    }
+  },
+  {
+    "id": "nli/no_instructions",
+    "state": "Please route this ticket.",
+    "questions": {
+      "routing_team": {
+        "type": "choice",
+        "criteria": {"billing": null, "technical": null}
+      }
+    }
+  },
+  {
+    "id": "nli/criteria_objects",
+    "state": "Refund requested.",
+    "questions": {
+      "q": {
+        "type": "choice",
+        "instructions": {"task": "route", "lang": "é"},
+        "criteria": {"a": {"n": 1}, "b": [2.5], "c": {"ok": true}, "d": null, "e": " ", "f": ["x", "y"]}
+      }
+    }
+  },
+  {
+    "id": "nli/noul_criteria",
+    "state": "The card was charged twice.",
+    "questions": {
+      "q": {
+        "type": "noul",
+        "instructions": "Is money involved?",
+        "criteria": {"true": "a payment, refund or price", "false": "no money at all"}
+      }
+    }
+  },
+  {
+    "id": "nli/noul_single",
+    "state": "Everything looks fine.",
+    "questions": {
+      "q": {"type": "noul", "instructions": "The customer is angry."}
+    }
+  },
+  {
+    "id": "nli/score_two",
+    "state": "Minor cosmetic issue.",
+    "questions": {
+      "q": {"type": "score", "instructions": "How bad?", "criteria": ["fine", "bad"]}
+    }
+  },
+  {
+    "id": "nli/score_ten",
+    "state": "A mild complaint.",
+    "questions": {
+      "q": {
+        "type": "score",
+        "instructions": "Level?",
+        "criteria": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+      }
+    }
+  },
+  {
+    "id": "nli/empty_instructions",
+    "state": "Checkout fails since the deploy.",
+    "questions": {
+      "q": {
+        "type": "score",
+        "instructions": "",
+        "criteria": [{"what": "low"}, "medium", ["high"]]
+      }
+    }
+  },
+  {
+    "id": "nli/choice_40",
+    "state": "Route this ticket.",
+    "questions": {
+      "q": {
+        "type": "choice",
+        "instructions": "Which option?",
+        "criteria": {
+          "c0": null, "c1": null, "c2": null, "c3": null, "c4": null,
+          "c5": null, "c6": null, "c7": null, "c8": null, "c9": null,
+          "c10": null, "c11": null, "c12": null, "c13": null, "c14": null,
+          "c15": null, "c16": null, "c17": null, "c18": null, "c19": null,
+          "c20": null, "c21": null, "c22": null, "c23": null, "c24": null,
+          "c25": null, "c26": null, "c27": null, "c28": null, "c29": null,
+          "c30": null, "c31": null, "c32": null, "c33": null, "c34": null,
+          "c35": null, "c36": null, "c37": null, "c38": null, "c39": null
+        }
+      }
+    }
+  },
+  {
+    "id": "nli/multi_question",
+    "state": {"from": "user@acme.com", "subject": "Duplicate charge on invoice #4411"},
+    "questions": {
+      "billing": {"type": "noul", "instructions": "Is this about billing?"},
+      "team": {
+        "type": "choice",
+        "instructions": "Which team?",
+        "criteria": {"billing": "charges, refunds", "technical": "bugs", "account": null}
+      },
+      "urgency": {
+        "type": "score",
+        "instructions": "How urgent?",
+        "criteria": ["low", "normal", "high", "critical"]
+      }
+    }
+  }
+]

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "name": "decima-guard",
+  "aliases": ["decima:guard"],
+  "family": "decima",
+  "engine": "candle",
+  "arch": "modernbert",
+  "format": "safetensors",
+  "layout": "decima-late-interaction-v2",
+  "subfolder": "pytorch",
+  "files": [
+    {
+      "path": "decima.json",
+      "role": "decision",
+      "sha256": "9f75a3d4a1b28f984f3c844ae88aadcb74d0f5cea16f742049a961ad2af387dc",
+      "size": 315
+    },
+    {
+      "path": "encoder/config.json",
+      "role": "config",
+      "sha256": "0cf300f2c1b3e3edb4cb2898b3a95520c4feb7c43d6f5440720e72826be5ffaa",
+      "size": 1898
+    },
+    {
+      "path": "encoder/tokenizer.json",
+      "role": "tokenizer",
+      "sha256": "d941237f7b665542273cd22102ae14fdacf54d3aaf0bd45da55022c46b4cc006",
+      "size": 34363440
+    },
+    {
+      "path": "encoder/model.safetensors",
+      "role": "weights",
+      "sha256": "5649d0c03ef13acad9a747fb5c73f559c2f100d51d3711ebf518c1346d566015",
+      "size": 1227771776
+    },
+    {
+      "path": "head.safetensors",
+      "role": "weights",
+      "sha256": "b59c91cb011b027557014acbc6592036064174e2aa58bd593bb0172d4d641e90",
+      "size": 56748532
+    }
+  ],
+  "calibration_mode": "raw",
+  "capabilities": {
+    "noul": true,
+    "choice": true,
+    "score": true,
+    "box": false,
+    "vision": false,
+    "ordinal": true
+  },
+  "license": "Apache-2.0",
+  "description": "Decima guard late-interaction decision model (mmBERT-base, 2048-token states)",
+  "source": "hf://amyrmahdy/decima-guard",
+  "revision": "98d3f734c8323cb390d9ad750e1a606a8dd56f09"
+}

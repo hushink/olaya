@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "name": "clef-flash",
+  "aliases": ["clef", "clef:flash", "clef:latest"],
+  "family": "clef",
+  "engine": "candle",
+  "arch": "qwen35",
+  "format": "safetensors",
+  "layout": "clef-joint-schema-v1",
+  "files": [
+    {
+      "path": "model-00001-of-00004.safetensors",
+      "role": "weights",
+      "sha256": "8b45a8e968141cdcc58fb71c9adfc258e2c77b5f062bc636c1fd5bc5d916b565",
+      "size": 4942706120
+    },
+    {
+      "path": "model-00002-of-00004.safetensors",
+      "role": "weights",
+      "sha256": "7590856c713eed844a2dcf48e6c43c4de165b788bc3f80e328311183cdbc7db8",
+      "size": 4987757928
+    },
+    {
+      "path": "model-00003-of-00004.safetensors",
+      "role": "weights",
+      "sha256": "e6eac2467952c33361ed7dcb3c7959d1086bbe57201cd3749c3d769fdc17fe63",
+      "size": 4954810240
+    },
+    {
+      "path": "model-00004-of-00004.safetensors",
+      "role": "weights",
+      "sha256": "9fcecc6556b39171238373a465f409794b7f821fb4cd1e6459e3a9c0fe317af7",
+      "size": 3934446832
+    },
+    {
+      "path": "joint_head.safetensors",
+      "role": "weights",
+      "sha256": "19cdcec8c81dc9212be320fff47462ab342fbc1278be4368fb3da71241cf5ba0",
+      "size": 243538016
+    },
+    {
+      "path": "config.json",
+      "role": "config",
+      "sha256": "66f87f6fb2616b46604daf2a9c67ddc87938296d07156efa34d59b5be49e3238",
+      "size": 2832
+    },
+    {
+      "path": "joint_head_config.json",
+      "role": "other",
+      "sha256": "77efe959a38b5b17b241543e129e695f3c77465ece55a25985279bd8176279a0",
+      "size": 119
+    },
+    {
+      "path": "tokenizer.json",
+      "role": "tokenizer",
+      "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "size": 19989325
+    }
+  ],
+  "calibration_mode": "clamp",
+  "capabilities": {
+    "noul": true,
+    "choice": true,
+    "score": true,
+    "box": false,
+    "vision": false
+  },
+  "license": "Apache-2.0",
+  "description": "Clef-Flash: Qwen3.5-9B backbone with a joint schema head; one softmax per question, no generation",
+  "source": "ms://Cloudflare/clef-flash",
+  "revision": "b1694c80d0e1a819b669b5649c75f1a13c7adfd2"
+}

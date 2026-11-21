@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "nli-modernbert-base",
+  "aliases": ["nli:modernbert-base"],
+  "family": "nli",
+  "engine": "candle",
+  "arch": "modernbert",
+  "format": "safetensors",
+  "layout": "nli-pairs-v1",
+  "files": [
+    {
+      "path": "model.safetensors",
+      "role": "weights",
+      "sha256": "5af4dac82bf3da16575d0c71c8c96ee7eb6621ae5f4f4726943d0a3583b44b46",
+      "size": 299227092
+    },
+    {
+      "path": "tokenizer.json",
+      "role": "tokenizer",
+      "sha256": "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+      "size": 3583228
+    },
+    {
+      "path": "config.json",
+      "role": "config",
+      "sha256": "d5c53ad1e5a23066144e958db475b1f8df7e8e45bf0ef6aba8a842c7f6450be1",
+      "size": 1469
+    }
+  ],
+  "calibration_mode": "raw",
+  "capabilities": {
+    "noul": true,
+    "choice": true,
+    "score": true,
+    "box": false,
+    "vision": false
+  },
+  "license": "Apache-2.0",
+  "description": "MoritzLaurer ModernBERT-base zeroshot-v2.0 NLI cross-encoder",
+  "source": "hf://MoritzLaurer/ModernBERT-base-zeroshot-v2.0",
+  "revision": "d421c4545a438fd006fb43f8b981c5d908faa1e1"
+}
