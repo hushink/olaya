@@ -2001,8 +2001,10 @@ dependencies = [
  "clap",
  "indexmap",
  "olaya",
+ "serde",
  "serde_json",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

@@ -145,6 +145,35 @@ curl http://127.0.0.1:11435/v1/systemone \
 > 服务默认只绑定 loopback。绑定非 loopback 地址时必须提供 `--api-key`（或显式使用
 > `--allow-unauthenticated`）。服务本身使用 HTTP；在可信网络之外部署时，请通过反向代理终止 TLS。
 
+### 配置文件
+
+`serve`、`ask` 和模型命令共享一份 TOML 配置。CLI 依次查找 `./olaya.toml`、`./sys1.toml`、
+`~/.olaya/config.toml`，也可以用 `--config` 或 `OLAYA_CONFIG` 指定路径。相对路径相对于配置文件
+所在目录解析。
+
+```toml
+[engine]
+device = "cuda"
+dtype = "f16"
+default_model = "laya:latest"
+
+[serve]
+host = "127.0.0.1"
+port = 11435
+max_batch = 32
+batch_wait_ms = 2
+
+[hub]
+hf_endpoint = "https://hf-mirror.com"
+
+[registry]
+# dir = "./registry"
+# store = false
+```
+
+优先级为 CLI 参数 > 环境变量 > 配置文件 > 内置默认值。运行 `olaya doctor` 可以查看当前加载的
+配置文件路径和生效的存储设置。
+
 ### 作为 Rust 库使用
 
 ```toml

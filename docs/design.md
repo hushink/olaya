@@ -211,6 +211,7 @@ Engine::list_models() / load(name) / unload(name)
 - `StoredModel::to_repo_manifest()` 从 OCI manifest + config 还原 `RepoManifest`，store 自描述、可直接分发。
 - `Store::verify` 重新计算每个 blob 的 sha256 与大小。
 - 默认 `~/.olaya/{models,store,cache,tmp}`；`OLAYA_MODELS_DIR` / `OLAYA_STORE_DIR` / `OLAYA_CACHE_DIR` / `OLAYA_TMP_DIR` 覆盖，优先级 flag > env > config > default。
+- CLI 共享配置文件按 `./olaya.toml` → `./sys1.toml` → `~/.olaya/config.toml` 查找，`--config` / `OLAYA_CONFIG` 可覆盖；`[engine]`（device/dtype/tf32/default_model）、`[serve]`（host/port/api_key/batch）、`[hub]`（目录/镜像/代理/offline）和 `[registry]`（dir/store）同时作用于 `serve`、`ask` 和模型命令，相对路径按配置文件目录解析。`olaya doctor` 输出实际加载的配置路径。
 - 自定义 store 通过 `Engine::builder().store(Arc::new(MyStore))` 注入；hub 与 engine 只依赖 trait。
 
 ## 8. HTTP

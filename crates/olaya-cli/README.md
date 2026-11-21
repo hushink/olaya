@@ -33,6 +33,35 @@ to the full path of `cl.exe`; otherwise `nvcc` fails with `Cannot find compiler 
 | `olaya models stored/manifest/verify` | Inspect the OCI content store |
 | `olaya doctor` | Print paths, catalog source, and diagnostics |
 
+## Configuration
+
+`serve`, `ask`, and the model commands share a TOML configuration. The CLI searches
+`./olaya.toml`, `./sys1.toml`, then `~/.olaya/config.toml`; use `--config` or `OLAYA_CONFIG` to
+choose another file. Relative paths are resolved against the file.
+
+```toml
+[engine]
+device = "cuda"
+dtype = "f16"
+default_model = "laya:latest"
+
+[serve]
+host = "127.0.0.1"
+port = 11435
+max_batch = 32
+batch_wait_ms = 2
+
+[hub]
+hf_endpoint = "https://hf-mirror.com"
+
+[registry]
+# dir = "./registry"
+# store = false
+```
+
+CLI flags override environment variables, which override file values. `olaya doctor` prints the
+loaded config path and effective storage settings.
+
 ## Ask
 
 ```sh
