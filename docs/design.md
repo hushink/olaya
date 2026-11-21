@@ -302,9 +302,10 @@ CI 由 `.github/workflows/ci.yml` 固定为 `fmt`、`clippy -D warnings`（含 `
 ## 13. 发布自动化
 
 - `release-plz.toml`：workspace 级默认打开 changelog、semver check 与 GitHub release；`xtask` 和 `olaya-conformance` 设置 `release = false` / `publish = false`。所有 publishable crate 继承 `[workspace.package].version`，release-plz 同步更新它们。
-- `.github/workflows/release-plz.yml`：push 到 `main` / `master` 时并行运行 `release-pr` 和 `release`。release job 使用 `contents: write` + `pull-requests: read`；PR job 使用 `contents: write` + `pull-requests: write`，并带不可取消的 concurrency；release job 不设置可取消 concurrency。
+- `.github/workflows/release-plz.yml`：push 到 `main` / `master` 时并行运行 `release-pr` 和 `release`。release job 使用 `contents: write` + `pull-requests: read` + `id-token: write`；PR job 使用 `contents: write` + `pull-requests: write`，并带不可取消的 concurrency；release job 不设置可取消 concurrency。
 - 发布顺序由 release-plz 解析 path 依赖决定，效果等价于 `olaya-sdk → olaya-core → olaya-candle → olaya → olaya-cli`，无需维护固定列表。
 - release 成功后，同一 job 运行 `cargo run -p xtask -- sync-registry --output "$RUNNER_TEMP/registry-catalog.json"`，解析 release-plz 的 `releases` 输出，对每个 tag 执行 `gh release upload --clobber`。这样即使 tag/release 由 `GITHUB_TOKEN` 创建、不会触发其他 workflow，catalog 仍会随 release 提供。
 - 手动创建的 GitHub Release 由 `release.yml`（`release: published`）补传；与 release-plz 的自动上传重复时 `--clobber` 幂等。
 - 当前设置 `release_always = false`，仅在 release PR 合并后发布；首次推送只创建 release PR，不会立即发布 0.1.0。release PR 应使用非 squash merge（GitHub-only）。如需每次 push 都发布 `Cargo.toml` 中尚未出现在 crates.io 的版本，可改为 `true`。
-- 需要 `CARGO_REGISTRY_TOKEN` secret；GitHub Release 由 workflow 内 `GITHUB_TOKEN` 创建，不依赖 tag push 事件。
+- 首次发布使用 `CARGO_REGISTRY_TOKEN` secret：crates.io 不允许通过 trusted publishing 创建新 crate。release job 在仓库变量 `CRATES_IO_TRUSTED_PUBLISHING` 未设置或不为 `true` 时走该路径；首次发布成功后，在 crates.io 为每个 crate 配置 trusted publisher（owner `hushink`、repo `olaya`、workflow `release-plz.yml`、environment 留空），把该变量设为 `true`，然后删除 secret。
+- 后续发布走 GitHub OIDC：release job 的 `id-token: write` 让 release-plz 换取 crates.io 短时 token；`release-pr` job 不注入 registry token。GitHub Release 由 workflow 内 `GITHUB_TOKEN` 创建，不依赖 tag push 事件。
