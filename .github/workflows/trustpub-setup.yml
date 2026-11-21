@@ -42,7 +42,7 @@ jobs:
 
             body=$(jq -n --arg crate "$crate" '{
               github_config: {
-                krate: $crate,
+                crate: $crate,
                 repository_owner: "hushink",
                 repository_name: "olaya",
                 workflow_filename: "release-plz.yml",
