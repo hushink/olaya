@@ -93,6 +93,7 @@ olaya models export --dir ./registry
 - `--registry-store` 将内容寻址 store 当作目录。
 - 拉取 `laya:latest` 这类 router 时会同时拉取所有路由目标（`laya` 和 `laya-multilingual`）；
   每个文件的下载进度会输出到 stderr。
+- `models list` 默认把 alias 归到规范模型下；`--all` 输出与 API 一致的扁平列表。
 - `olaya models export` 写出规范的 `v1/library/<family>/manifests/<name>.json` 布局，幂等；
   `--force` 覆盖内容不同的文件。
 

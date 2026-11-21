@@ -95,6 +95,7 @@ olaya models export --dir ./registry
 - `--registry-store` uses the content-addressed store as the catalog.
 - Pulling a router such as `laya:latest` pulls every routed checkpoint (`laya` and
   `laya-multilingual`). Per-file download progress is logged to stderr.
+- `models list` groups aliases under each canonical model; `--all` emits the flat API-style list.
 - `olaya models export` writes the canonical `v1/library/<family>/manifests/<name>.json` layout and
   is idempotent; `--force` overwrites changed files.
 

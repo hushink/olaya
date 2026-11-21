@@ -103,7 +103,11 @@ struct ModelsArgs {
 #[derive(Debug, Subcommand)]
 enum ModelsCommand {
     /// List manifests in the catalog.
-    List,
+    List {
+        /// Include every alias as a separate entry.
+        #[arg(long)]
+        all: bool,
+    },
     /// Show one catalog manifest.
     Show { model: String },
     /// Pull a model into the model directory and the content store.
@@ -411,7 +415,7 @@ fn models(
                 json!({ "model": model, "digest": stored.digest, "verified": true })
             );
         }
-        ModelsCommand::List => {
+        ModelsCommand::List { all } => {
             let engine = catalog_engine(
                 registry_dir,
                 registry_store,
@@ -419,10 +423,26 @@ fn models(
                 store_dir.as_deref(),
                 allow_remote,
             )?;
+            let models = if all {
+                serde_json::to_value(engine.list_models()).context("serializing models")?
+            } else {
+                let models = engine
+                    .manifests()
+                    .into_iter()
+                    .map(|manifest| {
+                        json!({
+                            "name": manifest.name,
+                            "aliases": manifest.aliases,
+                            "description": manifest.description,
+                            "release_date": manifest.release_date.unwrap_or_default(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                serde_json::to_value(models).context("serializing models")?
+            };
             println!(
                 "{}",
-                serde_json::to_string_pretty(&engine.list_models())
-                    .context("serializing models")?
+                serde_json::to_string_pretty(&models).context("serializing models")?
             );
         }
         ModelsCommand::Show { model } => {
