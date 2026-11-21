@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/hushink/olaya/compare/olaya-v0.1.0...olaya-v0.1.1) - 2026-11-21
+
+### Fixed
+
+- pull router targets and report download progress
+
 ## [0.1.0](https://github.com/hushink/olaya/releases/tag/olaya-v0.1.0) - 2026-11-21
 
 ### Added

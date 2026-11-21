@@ -10,8 +10,8 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-olaya = { version = "0.1.0", path = "../crates/olaya" }
-olaya-core = { version = "0.1.0", path = "../crates/olaya-core" }
+olaya = { version = "0.1.1", path = "../crates/olaya" }
+olaya-core = { version = "0.1.1", path = "../crates/olaya-core" }
 indexmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

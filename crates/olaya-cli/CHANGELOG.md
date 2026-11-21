@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/hushink/olaya/compare/olaya-cli-v0.1.0...olaya-cli-v0.1.1) - 2026-11-21
+
+### Fixed
+
+- *(cli)* group aliases in models list
+- pull router targets and report download progress
+
+### Other
+
+- note MSVC cl.exe requirement for Windows CUDA builds
+
 ## [0.1.0](https://github.com/hushink/olaya/releases/tag/olaya-cli-v0.1.0) - 2026-11-21
 
 ### Added
