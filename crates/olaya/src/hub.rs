@@ -17,6 +17,9 @@ use sha2::{Digest, Sha256};
 
 use crate::store::Store;
 
+/// Default Hugging Face endpoint used for model downloads.
+pub const DEFAULT_HF_ENDPOINT: &str = "https://hf-mirror.com";
+
 /// Where models, downloads, and staging live.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HubConfig {
@@ -30,7 +33,8 @@ pub struct HubConfig {
     pub store_dir: PathBuf,
     /// Refuse every network access.
     pub offline: bool,
-    /// Hugging Face endpoint override, e.g. `https://hf-mirror.com`.
+    /// Hugging Face endpoint. Defaults to `https://hf-mirror.com`; set
+    /// `HF_ENDPOINT=https://huggingface.co` to use the official endpoint.
     pub hf_endpoint: Option<String>,
     /// ModelScope endpoint override.
     pub modelscope_endpoint: Option<String>,
@@ -47,7 +51,7 @@ impl Default for HubConfig {
             tmp_dir: root.join("tmp"),
             store_dir: root.join("store"),
             offline: false,
-            hf_endpoint: None,
+            hf_endpoint: Some(DEFAULT_HF_ENDPOINT.to_owned()),
             modelscope_endpoint: None,
             proxy: None,
         }
@@ -328,14 +332,17 @@ impl Hub {
         })?;
 
         for file in missing {
-            let url = file.url.as_deref().expect("filtered by url");
+            let url = resolve_hf_url(
+                self.config.hf_endpoint.as_deref(),
+                file.url.as_deref().expect("filtered by url"),
+            );
             let target = base.join(&file.path);
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent).map_err(storage)?;
             }
             let temp = target.with_extension("part");
             let mut response = client
-                .get(url)
+                .get(&url)
                 .send()
                 .and_then(reqwest::blocking::Response::error_for_status)
                 .map_err(|error| RuntimeError::Registry {
@@ -663,6 +670,25 @@ fn human_bytes(bytes: u64) -> String {
     }
 }
 
+#[cfg(feature = "hub")]
+fn resolve_hf_url(endpoint: Option<&str>, url: &str) -> String {
+    let Some(endpoint) = endpoint else {
+        return url.to_owned();
+    };
+    const PREFIXES: [&str; 4] = [
+        "https://huggingface.co/",
+        "http://huggingface.co/",
+        "https://www.huggingface.co/",
+        "http://www.huggingface.co/",
+    ];
+    for prefix in PREFIXES {
+        if let Some(path) = url.strip_prefix(prefix) {
+            return format!("{}/{}", endpoint.trim_end_matches('/'), path);
+        }
+    }
+    url.to_owned()
+}
+
 fn import_manifest(
     store: &dyn ManifestStore,
     manifest: &RepoManifest,
@@ -832,6 +858,40 @@ mod tests {
 
     fn hub() -> Hub {
         Hub::new(HubConfig::default())
+    }
+
+    #[test]
+    fn hugging_face_uses_the_mirror_by_default() {
+        assert_eq!(
+            HubConfig::default().hf_endpoint.as_deref(),
+            Some(DEFAULT_HF_ENDPOINT)
+        );
+    }
+
+    #[test]
+    fn hugging_face_urls_are_rewritten_to_the_configured_endpoint() {
+        assert_eq!(
+            resolve_hf_url(
+                Some("https://hf-mirror.com/"),
+                "https://huggingface.co/Qwen/Qwen3.5-0.8B-Base/resolve/abc/config.json"
+            ),
+            "https://hf-mirror.com/Qwen/Qwen3.5-0.8B-Base/resolve/abc/config.json"
+        );
+        assert_eq!(
+            resolve_hf_url(
+                Some("https://huggingface.co"),
+                "https://www.huggingface.co/Qwen/model.bin?download=1"
+            ),
+            "https://huggingface.co/Qwen/model.bin?download=1"
+        );
+        assert_eq!(
+            resolve_hf_url(Some("https://hf-mirror.com"), "https://ollaya.dev/blobs/x"),
+            "https://ollaya.dev/blobs/x"
+        );
+        assert_eq!(
+            resolve_hf_url(None, "https://huggingface.co/Qwen/model.bin"),
+            "https://huggingface.co/Qwen/model.bin"
+        );
     }
 
     #[test]

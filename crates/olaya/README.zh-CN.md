@@ -40,6 +40,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `load_manifests` 读取经过校验的 manifest 目录。可用 `olaya models export --dir registry` 生成，
 或传入由自定义 `ManifestRegistry` 加载的目录。
 
+下载默认使用 `https://hf-mirror.com`。设置 `HF_ENDPOINT=https://huggingface.co` 或
+`HubConfig::hf_endpoint` 可改用 Hugging Face 官方端点。
+
 ## Feature
 
 | Feature | 作用 |

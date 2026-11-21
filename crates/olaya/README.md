@@ -42,6 +42,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `load_manifests` reads a directory of validated manifests. Create one with
 `olaya models export --dir registry`, or pass a catalog loaded by your own `ManifestRegistry`.
 
+Downloads use `https://hf-mirror.com` by default. Set `HF_ENDPOINT=https://huggingface.co` or
+`HubConfig::hf_endpoint` to use the official Hugging Face endpoint.
+
 ## Features
 
 | Feature | Effect |

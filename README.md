@@ -260,8 +260,9 @@ olaya models list
 olaya models show laya
 ```
 
-Model weights are downloaded from Hugging Face or ModelScope according to the manifest. The
-catalog itself is published with each release and cached locally.
+Model weights are downloaded from Hugging Face or ModelScope according to the manifest. Hugging Face
+downloads default to `https://hf-mirror.com`; set `HF_ENDPOINT=https://huggingface.co` to use the
+official endpoint. The catalog itself is published with each release and cached locally.
 
 ## Catalog and storage
 
@@ -296,7 +297,7 @@ store act as the catalog.
 | `OLAYA_TMP_DIR` | `$OLAYA_HOME/tmp` | Per-task download staging |
 | `OLAYA_REGISTRY_DIR` | `./registry`, then `$OLAYA_HOME/registry` | Filesystem catalog |
 | `OLAYA_REGISTRY_URL` | Latest release asset | Hosted catalog bundle |
-| `HF_ENDPOINT` | Hugging Face | Hugging Face endpoint override |
+| `HF_ENDPOINT` | `https://hf-mirror.com` | Hugging Face endpoint (`https://huggingface.co` for official) |
 | `MODELSCOPE_ENDPOINT` | ModelScope | ModelScope endpoint override |
 | `OLAYA_PROXY` | unset | Proxy for model downloads |
 | `OLAYA_OFFLINE` | unset | Disable network access |

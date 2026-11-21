@@ -159,7 +159,7 @@ Engine::list_models() / load(name) / unload(name)
 
 清单源本身可替换：`ManifestRegistry` trait（定义在 `olaya-core`）只要求 `manifests() -> Result<Vec<RepoManifest>, RegistryError>`，`FsRegistry` 是 `olaya` 提供的默认目录实现。嵌入方通过 `Engine::builder().registry(Arc::new(MyRegistry))` 接入数据库、HTTP 或远端 OCI registry；实现方只依赖 `olaya-core`。
 
-`RepoManifest.revision` 钉住 Hub 的 commit/tag；`files[].sha256` / `size` 声明内容校验，`Store::import` 在写入 blob 前复核。若所有文件都带 `sha256`，下载层关闭 provider 校验（镜像元数据不可靠时仍以 manifest 的 sha256 为准）；否则保留 shaul 的 `Auto` 校验。shaul 的 Hub backend 会写入 `<destination>/<repo-name>/<path>`，hub 下载后按 manifest 路径归一化到 `models_dir/<name>/<subfolder>/<path>`（并兼容旧布局）。
+`RepoManifest.revision` 钉住 Hub 的 commit/tag；`files[].sha256` / `size` 声明内容校验，`Store::import` 在写入 blob 前复核。若所有文件都带 `sha256`，下载层关闭 provider 校验（镜像元数据不可靠时仍以 manifest 的 sha256 为准）；否则保留 shaul 的 `Auto` 校验。Hugging Face 下载默认走 `https://hf-mirror.com`，可通过 `HF_ENDPOINT`（如 `https://huggingface.co`）覆盖；manifest 中绝对 `huggingface.co` URL 也会按该端点重写，ModelScope 和其它绝对 URL 不受影响。shaul 的 Hub backend 会写入 `<destination>/<repo-name>/<path>`，hub 下载后按 manifest 路径归一化到 `models_dir/<name>/<subfolder>/<path>`（并兼容旧布局）。
 
 `StoreRegistry` 是内置的另一种实现：它把 `ManifestStore` 当作清单源，用 `StoredModel::to_repo_manifest()` 把 OCI manifest + config 还原成 `RepoManifest`。因此分发的 store 可以同时充当 registry，完全脱离 `registry/` 目录；CLI 的 `--registry-store` 选择该模式。
 

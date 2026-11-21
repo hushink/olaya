@@ -252,7 +252,9 @@ olaya models list
 olaya models show laya
 ```
 
-模型权重会根据 manifest 从 Hugging Face 或 ModelScope 下载。模型目录随每个 release 发布，并在本地缓存。
+模型权重会根据 manifest 从 Hugging Face 或 ModelScope 下载。Hugging Face 默认使用
+`https://hf-mirror.com`；设置 `HF_ENDPOINT=https://huggingface.co` 可使用官方端点。模型目录随每个
+release 发布，并在本地缓存。
 
 ## 目录与存储
 
@@ -285,7 +287,7 @@ olaya models export --dir ./registry
 | `OLAYA_TMP_DIR` | `$OLAYA_HOME/tmp` | 单任务下载暂存 |
 | `OLAYA_REGISTRY_DIR` | `./registry`，其次 `$OLAYA_HOME/registry` | 文件系统目录 |
 | `OLAYA_REGISTRY_URL` | 最新 release asset | 托管 catalog bundle |
-| `HF_ENDPOINT` | Hugging Face | Hugging Face endpoint 覆盖 |
+| `HF_ENDPOINT` | `https://hf-mirror.com` | Hugging Face endpoint（官方为 `https://huggingface.co`） |
 | `MODELSCOPE_ENDPOINT` | ModelScope | ModelScope endpoint 覆盖 |
 | `OLAYA_PROXY` | 未设置 | 模型下载代理 |
 | `OLAYA_OFFLINE` | 未设置 | 禁用网络访问 |

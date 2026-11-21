@@ -25,7 +25,7 @@ pub use catalog::Catalog;
 pub use engine::{Engine, EngineBuilder, ModelHandle};
 pub use export::{ExportReport, export_registry};
 pub use families::BuiltinFamilies;
-pub use hub::{Hub, HubConfig};
+pub use hub::{DEFAULT_HF_ENDPOINT, Hub, HubConfig};
 pub use registry::{FsRegistry, StoreRegistry, default_registry_dir, load_manifests};
 #[cfg(feature = "remote")]
 pub use remote::{
