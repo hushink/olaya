@@ -13,6 +13,8 @@ categories = ["command-line-utilities"]
 [[bin]]
 name = "olaya"
 path = "src/main.rs"
+# Avoid a rustdoc output collision with the `olaya` library crate.
+doc = false
 
 [dependencies]
 olaya = { version = "0.1.0", path = "../olaya" }
