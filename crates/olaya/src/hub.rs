@@ -77,31 +77,37 @@ impl HubConfig {
     /// defaults. Flags and config files take precedence at the CLI layer.
     pub fn from_env() -> Self {
         let mut config = Self::default();
+        config.apply_env();
+        config
+    }
+
+    /// Overlay the `OLAYA_*` / `HF_ENDPOINT` environment variables onto the
+    /// current configuration.
+    pub fn apply_env(&mut self) {
         if let Some(path) = non_empty_env("OLAYA_MODELS_DIR") {
-            config.models_dir = PathBuf::from(path);
+            self.models_dir = PathBuf::from(path);
         }
         if let Some(path) = non_empty_env("OLAYA_CACHE_DIR") {
-            config.cache_dir = PathBuf::from(path);
+            self.cache_dir = PathBuf::from(path);
         }
         if let Some(path) = non_empty_env("OLAYA_TMP_DIR") {
-            config.tmp_dir = PathBuf::from(path);
+            self.tmp_dir = PathBuf::from(path);
         }
         if let Some(path) = non_empty_env("OLAYA_STORE_DIR") {
-            config.store_dir = PathBuf::from(path);
+            self.store_dir = PathBuf::from(path);
         }
         if let Some(endpoint) = non_empty_env("HF_ENDPOINT") {
-            config.hf_endpoint = Some(endpoint.to_string_lossy().into_owned());
+            self.hf_endpoint = Some(endpoint.to_string_lossy().into_owned());
         }
         if let Some(endpoint) = non_empty_env("MODELSCOPE_ENDPOINT") {
-            config.modelscope_endpoint = Some(endpoint.to_string_lossy().into_owned());
+            self.modelscope_endpoint = Some(endpoint.to_string_lossy().into_owned());
         }
         if let Some(proxy) = non_empty_env("OLAYA_PROXY") {
-            config.proxy = Some(proxy.to_string_lossy().into_owned());
+            self.proxy = Some(proxy.to_string_lossy().into_owned());
         }
         if non_empty_env("OLAYA_OFFLINE").is_some() {
-            config.offline = true;
+            self.offline = true;
         }
-        config
     }
 
     pub fn ensure_dirs(&self) -> Result<(), RuntimeError> {
