@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/hushink/olaya/compare/olaya-candle-v0.1.3...olaya-candle-v0.1.4) - 2026-11-21
+
+### Other
+
+- release v0.1.4
+
 ## [0.1.0](https://github.com/hushink/olaya/releases/tag/olaya-candle-v0.1.0) - 2026-11-21
 
 ### Added
