@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/hushink/olaya/compare/olaya-v0.1.4...olaya-v0.1.5) - 2026-11-21
+
+### Added
+
+- *(cli)* add shared TOML configuration
+
 ## [0.1.4](https://github.com/hushink/olaya/compare/olaya-v0.1.3...olaya-v0.1.4) - 2026-11-21
 
 ### Fixed
