@@ -46,6 +46,9 @@ cargo install olaya-cli --features cuda
 cargo install olaya-cli --features metal
 ```
 
+Windows 上 `nvcc` 需要能找到 MSVC 的 `cl.exe`。请在 **x64 Native Tools Command Prompt** 中运行
+CUDA 安装命令，或把 `NVCC_CCBIN` 设置为 `cl.exe` 的完整路径。
+
 ### 拉取模型并提问
 
 ```sh

@@ -17,6 +17,9 @@ cargo install olaya-cli --features cuda
 cargo install olaya-cli --features metal
 ```
 
+Windows 上请在 **x64 Native Tools Command Prompt** 中运行 CUDA 安装命令，或把 `NVCC_CCBIN`
+设置为 `cl.exe` 的完整路径；否则 `nvcc` 会报 `Cannot find compiler 'cl.exe' in PATH`。
+
 ## 命令
 
 | 命令 | 用途 |

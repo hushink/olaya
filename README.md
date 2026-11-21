@@ -50,6 +50,9 @@ cargo install olaya-cli --features cuda
 cargo install olaya-cli --features metal
 ```
 
+On Windows, `nvcc` must find the MSVC host compiler. Run the CUDA command from an **x64 Native
+Tools Command Prompt**, or set `NVCC_CCBIN` to the full path of `cl.exe`.
+
 ### Pull a model and ask a question
 
 ```sh

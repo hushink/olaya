@@ -18,6 +18,9 @@ cargo install olaya-cli --features cuda
 cargo install olaya-cli --features metal
 ```
 
+On Windows, run the CUDA command from an **x64 Native Tools Command Prompt**, or set `NVCC_CCBIN`
+to the full path of `cl.exe`; otherwise `nvcc` fails with `Cannot find compiler 'cl.exe' in PATH`.
+
 ## Commands
 
 | Command | Purpose |
