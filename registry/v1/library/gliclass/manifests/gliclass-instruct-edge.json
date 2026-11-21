@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "gliclass-instruct-edge",
+  "aliases": ["gliclass:instruct-edge"],
+  "family": "gliclass",
+  "engine": "candle",
+  "arch": "modernbert",
+  "format": "safetensors",
+  "layout": "gliclass-uni-v1",
+  "files": [
+    {
+      "path": "model.safetensors",
+      "role": "weights",
+      "sha256": "3ea2c091f32877c9db46d2defe4ef23148d3ad21350bfd765a443e026588eeae",
+      "size": 130835560
+    },
+    {
+      "path": "tokenizer.json",
+      "role": "tokenizer",
+      "sha256": "879c2bc610c79b03a3fb72e1e80b6d966615b957bdaedf137f1e87270c90935b",
+      "size": 3584041
+    },
+    {
+      "path": "config.json",
+      "role": "config",
+      "sha256": "8c901824b9352754c9722f50830049b4fbb169f62823b6cdc9a4ce51918179f9",
+      "size": 4560
+    }
+  ],
+  "calibration_mode": "raw",
+  "capabilities": {
+    "noul": true,
+    "choice": true,
+    "score": true,
+    "box": false,
+    "vision": false
+  },
+  "license": "Apache-2.0",
+  "description": "GLiClass instruct-edge v1.0 (ModernBERT ettin-encoder-32m uni-encoder)",
+  "source": "hf://knowledgator/gliclass-instruct-edge-v1.0",
+  "revision": "727be8a417f6a7718e591b025e07054c146d8139"
+}

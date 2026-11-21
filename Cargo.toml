@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask", "conformance"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+serde_path_to_error = "0.1"
+base64 = "0.22"
+httpdate = "1"
+indexmap = { version = "2", features = ["serde"] }
+thiserror = "2"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+sha2 = "0.11"
+hex = "0.4"
+url = "2"
+percent-encoding = "2"
+tempfile = "3"
+axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1", "query", "multipart"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "signal", "macros", "sync", "time"] }
+tower-http = { version = "0.7", default-features = false, features = ["cors", "trace"] }
+tower = { version = "0.5", features = ["util"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+zip = { version = "9.8.1", default-features = false }
+shaul = { version = "1.2.0" }
+candle-core = "0.11.1"
+candle-nn = "0.11.1"
+candle-transformers = "0.11.1"
+tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
+clap = { version = "4.6", features = ["derive", "env"] }
+directories = "6.0.0"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+authors = ["weilanzhuan@gmail.com"]
+license = "Apache-2.0"
+repository = "https://github.com/hushink/olaya"

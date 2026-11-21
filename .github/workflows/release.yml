@@ -1,0 +1,68 @@
+name: Release catalog
+
+# Runs after a GitHub Release is published. For manually published releases it
+# is the primary catalog uploader. With release-plz and the default
+# GITHUB_TOKEN, release-plz-created releases do not trigger this workflow;
+# release-plz.yml attaches the catalog inside its release job instead. If
+# release-plz uses a PAT, this workflow may also run for its releases; the
+# shared release-assets concurrency group and --clobber keep the uploads
+# idempotent.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to attach registry-catalog.json to
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: release-assets
+  cancel-in-progress: false
+
+jobs:
+  publish-catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build registry-catalog.json
+        run: >
+          cargo run -p xtask --
+          sync-registry
+          --output "$RUNNER_TEMP/registry-catalog.json"
+
+      - name: Verify the catalog bundle
+        run: |
+          jq -e \
+            '.schema_version == 1
+             and ((.manifests | type) == "array")
+             and ((.manifests | length) > 0)' \
+            "$RUNNER_TEMP/registry-catalog.json" > /dev/null
+          echo "manifests: $(jq '.manifests | length' "$RUNNER_TEMP/registry-catalog.json")"
+          echo "bytes: $(wc -c < "$RUNNER_TEMP/registry-catalog.json")"
+
+      - name: Upload to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+        run: |
+          if ! gh release view "$TAG" > /dev/null; then
+            echo "release $TAG does not exist; publish the release first" >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "$RUNNER_TEMP/registry-catalog.json" --clobber

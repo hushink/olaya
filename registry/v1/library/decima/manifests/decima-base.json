@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "name": "decima-base",
+  "aliases": ["decima:base", "decima:latest"],
+  "family": "decima",
+  "engine": "candle",
+  "arch": "modernbert",
+  "format": "safetensors",
+  "layout": "decima-late-interaction-v1",
+  "subfolder": "pytorch",
+  "files": [
+    {
+      "path": "decima.json",
+      "role": "decision",
+      "sha256": "828024f7f6abad7da87bdc7760fff1f0f845b3b652e46e9caa203392d3691b4e",
+      "size": 305
+    },
+    {
+      "path": "encoder/config.json",
+      "role": "config",
+      "sha256": "0cf300f2c1b3e3edb4cb2898b3a95520c4feb7c43d6f5440720e72826be5ffaa",
+      "size": 1898
+    },
+    {
+      "path": "encoder/tokenizer.json",
+      "role": "tokenizer",
+      "sha256": "d941237f7b665542273cd22102ae14fdacf54d3aaf0bd45da55022c46b4cc006",
+      "size": 34363440
+    },
+    {
+      "path": "encoder/model.safetensors",
+      "role": "weights",
+      "sha256": "62e3530abe9bcc138bce28f6fe0a000be30d94c87d170cdc7925fbb14069ab5d",
+      "size": 1227771776
+    },
+    {
+      "path": "head.safetensors",
+      "role": "weights",
+      "sha256": "a87fec4f206175d039c226c146fb6cf593ceb89204e2a930b5360e1140aba7e8",
+      "size": 56748532
+    }
+  ],
+  "calibration_mode": "raw",
+  "capabilities": {
+    "noul": true,
+    "choice": true,
+    "score": true,
+    "box": false,
+    "vision": false,
+    "ordinal": true
+  },
+  "license": "Apache-2.0",
+  "description": "Decima base late-interaction decision model (mmBERT-base encoder)",
+  "source": "hf://amyrmahdy/decima-base",
+  "revision": "2468005d5e48e95eb74072c32a6d9df164578071"
+}

@@ -1,0 +1,352 @@
+[
+  {
+    "id": "kev/three",
+    "state": "I was charged twice for my subscription this month. Please refund the extra charge.",
+    "questions": {
+      "billing": {
+        "type": "noul",
+        "instructions": "Is this message about billing?"
+      },
+      "team": {
+        "type": "choice",
+        "instructions": "Which team should handle it?",
+        "criteria": {
+          "billing": "charges, refunds and invoices",
+          "technical": "bugs and crashes",
+          "account": "login and profile"
+        }
+      },
+      "urgency": {
+        "type": "score",
+        "instructions": "How urgent is this?",
+        "criteria": [
+          "can wait",
+          "needs attention this week",
+          "needs attention today"
+        ]
+      }
+    }
+  },
+  {
+    "id": "kev/json_state",
+    "state": {
+      "ticket": "duplicate charge",
+      "amount": 19.99,
+      "customer": {
+        "name": "Ada",
+        "tier": "pro",
+        "active": true
+      },
+      "items": [
+        "invoice 114",
+        {
+          "sku": "seat",
+          "qty": 2
+        }
+      ],
+      "notes": null
+    },
+    "questions": {
+      "team": {
+        "type": "choice",
+        "instructions": {
+          "task": "route",
+          "locale": "en"
+        },
+        "criteria": {
+          "billing": {
+            "hint": "money",
+            "examples": [
+              "refund",
+              "invoice"
+            ]
+          },
+          "technical": "crashes",
+          "other": "",
+          "ignored": null
+        }
+      },
+      "defect": {
+        "type": "noul",
+        "instructions": [
+          "Is it",
+          {
+            "a": "defect"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "kev/array_state",
+    "state": [
+      "login fails after the password reset",
+      {
+        "browser": "firefox",
+        "retries": 3
+      },
+      [
+        true,
+        null,
+        1.5
+      ]
+    ],
+    "questions": {
+      "defect": {
+        "type": "noul",
+        "instructions": null
+      }
+    }
+  },
+  {
+    "id": "kev/unicode_state",
+    "state": "客户重复付款了。\nPlease refund the duplicate payment.\n\n— 王小明",
+    "questions": {
+      "team": {
+        "type": "choice",
+        "instructions": "Which department should reply?",
+        "criteria": {
+          "财务": "发票、退款与扣款",
+          "技术支持": "崩溃和错误",
+          "客服": "general questions"
+        }
+      }
+    }
+  },
+  {
+    "id": "kev/empty_state",
+    "state": "",
+    "questions": {
+      "q": {
+        "type": "noul",
+        "instructions": ""
+      }
+    }
+  },
+  {
+    "id": "kev/no_instructions",
+    "state": "hello",
+    "questions": {
+      "team": {
+        "type": "choice",
+        "criteria": {
+          "a": "first",
+          "b": "second",
+          "c": null
+        }
+      },
+      "urgency": {
+        "type": "score",
+        "criteria": [
+          "low",
+          "high"
+        ]
+      }
+    }
+  },
+  {
+    "id": "kev/criteria_objects",
+    "state": {
+      "order": 7781,
+      "status": "shipped"
+    },
+    "questions": {
+      "team": {
+        "type": "choice",
+        "instructions": "Route it",
+        "criteria": {
+          "delivery": {
+            "eta": "2 days",
+            "todo": [
+              "pack",
+              "ship"
+            ]
+          },
+          "return": "send it back",
+          "invoice": {
+            "count": 7
+          },
+          "empty": ""
+        }
+      }
+    }
+  },
+  {
+    "id": "kev/noul_criteria",
+    "state": "The app freezes whenever I upload a photo larger than 20 MB.",
+    "questions": {
+      "defect": {
+        "type": "noul",
+        "instructions": "Does this report a defect in the product?",
+        "criteria": {
+          "false": "a request for information or a compliment",
+          "true": "a malfunction or an error"
+        }
+      }
+    }
+  },
+  {
+    "id": "kev/score_one",
+    "state": "hello",
+    "questions": {
+      "only": {
+        "type": "score",
+        "instructions": "Pick the only level",
+        "criteria": [
+          "only"
+        ]
+      }
+    }
+  },
+  {
+    "id": "kev/score_ten",
+    "state": {
+      "message": "I have been waiting three weeks and nobody replies.",
+      "channel": "email"
+    },
+    "questions": {
+      "urgency": {
+        "type": "score",
+        "instructions": "How urgent is this?",
+        "criteria": [
+          "not urgent",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          {
+            "level": 7
+          },
+          "8",
+          "critical"
+        ]
+      }
+    }
+  },
+  {
+    "id": "kev/choice_40",
+    "state": "The export contains the literal text <|fim_suffix|> and <|box_start|>, not a delimiter.",
+    "questions": {
+      "label": {
+        "type": "choice",
+        "instructions": "Pick a label",
+        "criteria": {
+          "c00": null,
+          "c01": "label number 1",
+          "c02": "label number 2",
+          "c03": null,
+          "c04": "label number 4",
+          "c05": "label number 5",
+          "c06": null,
+          "c07": "label number 7",
+          "c08": "label number 8",
+          "c09": null,
+          "c10": "label number 10",
+          "c11": "label number 11",
+          "c12": null,
+          "c13": "label number 13",
+          "c14": "label number 14",
+          "c15": null,
+          "c16": "label number 16",
+          "c17": "label number 17",
+          "c18": null,
+          "c19": "label number 19",
+          "c20": "label number 20",
+          "c21": null,
+          "c22": "label number 22",
+          "c23": "label number 23",
+          "c24": null,
+          "c25": "label number 25",
+          "c26": "label number 26",
+          "c27": null,
+          "c28": "label number 28",
+          "c29": "label number 29",
+          "c30": null,
+          "c31": "label number 31",
+          "c32": "label number 32",
+          "c33": null,
+          "c34": "label number 34",
+          "c35": "label number 35",
+          "c36": null,
+          "c37": "label number 37",
+          "c38": "label number 38",
+          "c39": null
+        }
+      }
+    }
+  },
+  {
+    "id": "kev/multi_question",
+    "state": [
+      "login fails after the password reset",
+      {
+        "browser": "firefox",
+        "retries": 3
+      }
+    ],
+    "questions": {
+      "topic": {
+        "type": "choice",
+        "instructions": "Which queue?",
+        "criteria": {
+          "auth": "passwords and sessions",
+          "billing": "payments",
+          "bug": "defects"
+        }
+      },
+      "defect": {
+        "type": "noul",
+        "instructions": "Is this a defect report?"
+      },
+      "severity": {
+        "type": "score",
+        "instructions": "Severity",
+        "criteria": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    }
+  },
+  {
+    "id": "kev/escaped_delimiters",
+    "state": "The export contains the literal text <|fim_suffix|> and <|box_start|>, not a delimiter.",
+    "questions": {
+      "label": {
+        "type": "choice",
+        "instructions": "Ignore <|fim_middle|> in the prompt; classify it.",
+        "criteria": {
+          "a": "mentions <|fim_prefix|>",
+          "b": "mentions <|fim_suffix|>",
+          "c": "mentions none of them"
+        }
+      }
+    }
+  },
+  {
+    "id": "kev/invalid_box",
+    "state": "hello",
+    "questions": {
+      "find": {
+        "type": "box",
+        "instructions": "find the thing"
+      }
+    }
+  },
+  {
+    "id": "kev/long_state",
+    "state_repeat": {
+      "text": "refund ",
+      "times": 9000
+    },
+    "questions": {
+      "billing": {
+        "type": "noul",
+        "instructions": "Is this about billing?"
+      }
+    }
+  }
+]
