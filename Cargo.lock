@@ -2813,9 +2813,9 @@ dependencies = [
 
 [[package]]
 name = "shaul"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcb1136c2d53806a4b229a41391c7c3533b3e4f8a03f26b76e0eb13c9b756e87"
+checksum = "8b10ed8014b3d4586d6db3e85702b15eba0b759694a8ffecd2b1390946d2afbb"
 dependencies = [
  "shaul-core",
  "shaul-http",
@@ -2824,9 +2824,9 @@ dependencies = [
 
 [[package]]
 name = "shaul-core"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a92b3806e114f56644e48628cf7f3893a228230d8610973002ddb4fb8f81a114"
+checksum = "ca6c96bfa265a4065ffa9d47ac1584e945d46e37856fa6ef8d49b22796e4bf5c"
 dependencies = [
  "async-trait",
  "digest 0.11.3",
@@ -2856,9 +2856,9 @@ dependencies = [
 
 [[package]]
 name = "shaul-http"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62653241a5299de6b42930a1ea9ba4d1b50aa6d21061f702bea8bf1b9fac53ed"
+checksum = "23b2f007c884c08530549d566144abcc66bc210ea88dd976be615cc184edacdd"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -2881,9 +2881,9 @@ dependencies = [
 
 [[package]]
 name = "shaul-hub"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5246a2dbc64647a3143267e6eedb318e46f5f16245e8a70d506fe76b2c4dc33"
+checksum = "70529e350db16fa50c288ba2435087df2574c8659dd1d981899bd1f7b6ca2286"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3236,9 +3236,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.2.1+spec-1.1.0"
+version = "1.2.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5755c51863cdac711f1956baf8eb9588e060755f7d3c4c979e70ea1e1f32cd7"
+checksum = "5426cb1b964690d913f6c5c1a1ae0b42f428ec506bb4d452876d7a209c9bca3b"
 dependencies = [
  "indexmap",
  "serde_core",
@@ -3260,9 +3260,9 @@ dependencies = [
 
 [[package]]
 name = "toml_parser"
-version = "1.1.5+spec-1.1.0"
+version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
+checksum = "e6769c452d71ba30696c6b37770c439a9cc9110f47f7d5cdbeda79840ef5ea31"
 dependencies = [
  "winnow",
 ]
@@ -3513,9 +3513,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "walkdir"
-version = "2.5.0"
+version = "2.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
+checksum = "b42e295b7452c4604982280d8586001fcad9b8b201cac67bca9771e7a7475403"
 dependencies = [
  "same-file",
  "winapi-util",
@@ -3841,18 +3841,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.63"
+version = "0.8.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8"
+checksum = "ed43f3060383c64b000f3c630550aebdfa9d3b76d48de32390483dd2cc7e0865"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.63"
+version = "0.8.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f"
+checksum = "a5cbd820fe3e35fb38c83b6dc7e6b1618bc46e0cd10073ae94e8d52dc468d8b9"
 dependencies = [
  "proc-macro2",
  "quote",
