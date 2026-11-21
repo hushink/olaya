@@ -17,7 +17,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-olaya = { version = "0.1.3", path = "../olaya" }
+olaya = { version = "0.1.4", path = "../olaya" }
 clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
