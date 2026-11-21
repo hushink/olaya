@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
@@ -9,8 +9,8 @@ use olaya_candle::{Family, FamilyFactory, LoadContext, ModelError};
 use olaya_core::{
     Answers, Capabilities, DecisionError, DecisionRuntime, Error, FileRole, ManifestError,
     ManifestRegistry, ManifestStore, MetricsSnapshot, ModelMetadata, QType, Questions,
-    RegistryError, RepoManifest, RuntimeError, RuntimeMetrics, State, SystemOneResponse,
-    TokenEncoder,
+    RegistryError, RepoManifest, RouterConfig, RuntimeError, RuntimeMetrics, State,
+    SystemOneResponse, TokenEncoder,
 };
 
 use crate::catalog::Catalog;
@@ -575,6 +575,75 @@ fn unload_inner(inner: &EngineInner, name: &str, depth: usize) -> bool {
     removed
 }
 
+fn pull_inner(
+    inner: &EngineInner,
+    reference: &str,
+    depth: usize,
+    visited: &mut HashSet<String>,
+) -> Result<RepoManifest, RuntimeError> {
+    if depth > 4 {
+        return Err(RuntimeError::InvalidRequest {
+            message: "router chain is too deep".to_owned(),
+        });
+    }
+
+    let resolved = inner.resolve(reference);
+    if let Some((canonical, manifest)) = &resolved {
+        if !visited.insert(canonical.clone()) {
+            return Ok(manifest.clone());
+        }
+        if let Some(router) = &manifest.router {
+            let targets = router_targets(router);
+            tracing::info!(model = %manifest.name, targets = ?targets, "pulling router targets");
+            for target in &targets {
+                pull_inner(inner, target, depth + 1, visited)?;
+            }
+            tracing::info!(model = %manifest.name, "router targets pulled");
+            return Ok(manifest.clone());
+        }
+    }
+
+    let manifest = inner
+        .hub
+        .pull(reference, resolved.as_ref().map(|(_, manifest)| manifest))?;
+    inner
+        .catalog
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .upsert(manifest.clone())
+        .map_err(|error| RuntimeError::Storage {
+            message: error.to_string(),
+        })?;
+
+    if let Some(router) = &manifest.router {
+        if !visited.insert(manifest.name.clone()) {
+            return Ok(manifest);
+        }
+        let targets = router_targets(router);
+        tracing::info!(model = %manifest.name, targets = ?targets, "pulling router targets");
+        for target in &targets {
+            pull_inner(inner, target, depth + 1, visited)?;
+        }
+        tracing::info!(model = %manifest.name, "router targets pulled");
+    }
+
+    Ok(manifest)
+}
+
+fn router_targets(router: &RouterConfig) -> Vec<String> {
+    let mut targets = Vec::new();
+    for target in router
+        .routes
+        .values()
+        .chain(std::iter::once(&router.default))
+    {
+        if !targets.contains(target) {
+            targets.push(target.clone());
+        }
+    }
+    targets
+}
+
 fn ask_inner(
     inner: &EngineInner,
     model: &str,
@@ -974,19 +1043,8 @@ impl DecisionRuntime for Engine {
 
     fn pull(&self, reference: &str) -> Result<RepoManifest, RuntimeError> {
         let started = Instant::now();
-        let hint = self.inner.resolve(reference).map(|(_, manifest)| manifest);
-        let result = (|| -> Result<RepoManifest, RuntimeError> {
-            let manifest = self.inner.hub.pull(reference, hint.as_ref())?;
-            self.inner
-                .catalog
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .upsert(manifest.clone())
-                .map_err(|error| RuntimeError::Storage {
-                    message: error.to_string(),
-                })?;
-            Ok(manifest)
-        })();
+        let mut visited = HashSet::new();
+        let result = pull_inner(&self.inner, reference, 0, &mut visited);
         let elapsed = started.elapsed().as_secs_f64();
         match &result {
             Ok(manifest) => {

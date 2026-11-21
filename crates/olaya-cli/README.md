@@ -93,6 +93,8 @@ olaya models export --dir ./registry
 - `--registry-dir` / `OLAYA_REGISTRY_DIR` selects a filesystem catalog.
 - `OLAYA_REGISTRY_URL` selects a hosted catalog bundle.
 - `--registry-store` uses the content-addressed store as the catalog.
+- Pulling a router such as `laya:latest` pulls every routed checkpoint (`laya` and
+  `laya-multilingual`). Per-file download progress is logged to stderr.
 - `olaya models export` writes the canonical `v1/library/<family>/manifests/<name>.json` layout and
   is idempotent; `--force` overwrites changed files.
 

@@ -1,7 +1,15 @@
 #[cfg(feature = "hub")]
+use std::collections::HashMap;
+#[cfg(feature = "hub")]
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(feature = "hub")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "hub")]
+use std::sync::mpsc::RecvTimeoutError;
+#[cfg(feature = "hub")]
+use std::time::{Duration, Instant};
 
 use olaya_core::{ManifestStore, RepoManifest, RuntimeError, StoreError};
 #[cfg(feature = "hub")]
@@ -333,9 +341,16 @@ impl Hub {
                 .map_err(|error| RuntimeError::Registry {
                     message: format!("downloading {url}: {error}"),
                 })?;
+            let total = response.content_length();
+            tracing::info!(
+                file = %file.path,
+                total = %total.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
+                "downloading file"
+            );
             let mut output = std::fs::File::create(&temp).map_err(storage)?;
             let mut hasher = Sha256::new();
             let mut size = 0u64;
+            let mut last_logged = Instant::now();
             let mut buffer = [0u8; 64 * 1024];
             loop {
                 let read = response
@@ -349,8 +364,18 @@ impl Hub {
                 hasher.update(&buffer[..read]);
                 output.write_all(&buffer[..read]).map_err(storage)?;
                 size += read as u64;
+                if last_logged.elapsed() >= Duration::from_secs(1) {
+                    tracing::info!(
+                        file = %file.path,
+                        downloaded = %human_bytes(size),
+                        total = %total.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
+                        "download progress"
+                    );
+                    last_logged = Instant::now();
+                }
             }
             drop(output);
+            tracing::info!(file = %file.path, size = %human_bytes(size), "downloaded file");
             let digest = hex::encode(hasher.finalize());
             let invalid = file.size.is_some_and(|expected| expected != size)
                 || file
@@ -479,12 +504,25 @@ impl Hub {
             revision: revision.map(str::to_owned),
             ..Default::default()
         };
-        let task = engine
+
+        // shaul reports byte-level progress on a channel; forward it to the
+        // log while the blocking download runs.
+        let events = engine.subscribe();
+        let stop = Arc::new(AtomicBool::new(false));
+        let progress_stop = Arc::clone(&stop);
+        let progress = std::thread::spawn(move || log_download_progress(events, progress_stop));
+
+        let downloaded = engine
             .download(link, destination.to_path_buf(), options)
-            .map_err(registry)?;
+            .map_err(registry);
+        stop.store(true, Ordering::Relaxed);
+        let _ = progress.join();
+        let task = downloaded?;
+
         tracing::info!(
             state = ?task.state,
             files = task.files.len(),
+            bytes = task.files.iter().map(|file| file.downloaded).sum::<u64>(),
             "download finished"
         );
         Ok(())
@@ -544,6 +582,84 @@ impl Hub {
         serde_json::from_slice(&bytes).map_err(|error| RuntimeError::Registry {
             message: format!("parsing {}: {error}", manifest_path.display()),
         })
+    }
+}
+
+#[cfg(feature = "hub")]
+fn log_download_progress(
+    events: std::sync::mpsc::Receiver<shaul::DownloadEvent>,
+    stop: Arc<AtomicBool>,
+) {
+    let mut last_logged = HashMap::new();
+    loop {
+        let event = match events.recv_timeout(Duration::from_millis(250)) {
+            Ok(event) => event,
+            Err(RecvTimeoutError::Timeout) => {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+
+        match event.kind {
+            shaul::EventKind::FileStarted {
+                file, total_bytes, ..
+            } => {
+                last_logged.insert(file.clone(), Instant::now());
+                tracing::info!(
+                    file = %file,
+                    total = %total_bytes.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
+                    "downloading file"
+                );
+            }
+            shaul::EventKind::Progress {
+                file,
+                downloaded_bytes,
+                total_bytes,
+                ..
+            } => {
+                let now = Instant::now();
+                let due = match last_logged.get(&file) {
+                    Some(previous) => now.duration_since(*previous) >= Duration::from_secs(1),
+                    None => true,
+                };
+                if due {
+                    last_logged.insert(file.clone(), now);
+                    tracing::info!(
+                        file = %file,
+                        downloaded = %human_bytes(downloaded_bytes),
+                        total = %total_bytes.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
+                        "download progress"
+                    );
+                }
+            }
+            shaul::EventKind::FileCompleted { file, size, .. } => {
+                last_logged.remove(&file);
+                tracing::info!(file = %file, size = %human_bytes(size), "downloaded file");
+            }
+            shaul::EventKind::Warning { message, .. } => {
+                tracing::warn!(%message, "download warning");
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "hub")]
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
