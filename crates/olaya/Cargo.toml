@@ -11,8 +11,8 @@ keywords = ["system-one", "decision-model", "candle", "inference"]
 categories = ["science", "api-bindings"]
 
 [dependencies]
-olaya-core = { version = "0.1.0", path = "../olaya-core" }
-olaya-candle = { version = "0.1.0", path = "../olaya-candle" }
+olaya-core = { version = "0.1.1", path = "../olaya-core" }
+olaya-candle = { version = "0.1.1", path = "../olaya-candle" }
 candle-core.workspace = true
 candle-nn.workspace = true
 indexmap.workspace = true
