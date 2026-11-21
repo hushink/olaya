@@ -1,7 +1,7 @@
 #[cfg(feature = "hub")]
 use std::collections::HashMap;
 #[cfg(feature = "hub")]
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(feature = "hub")]
@@ -330,6 +330,8 @@ impl Hub {
         let client = builder.build().map_err(|error| RuntimeError::Registry {
             message: format!("building the HTTP client: {error}"),
         })?;
+        let interactive = std::io::stderr().is_terminal();
+        let mut progress = TerminalProgress::new(interactive);
 
         for file in missing {
             let url = resolve_hf_url(
@@ -349,15 +351,24 @@ impl Hub {
                     message: format!("downloading {url}: {error}"),
                 })?;
             let total = response.content_length();
-            tracing::info!(
-                file = %file.path,
-                total = %total.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
-                "downloading file"
-            );
+            if interactive {
+                progress.update(&progress_line(&file.path, 0, total));
+            } else {
+                tracing::info!(
+                    file = %file.path,
+                    total = %total.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
+                    "downloading file"
+                );
+            }
             let mut output = std::fs::File::create(&temp).map_err(storage)?;
             let mut hasher = Sha256::new();
             let mut size = 0u64;
-            let mut last_logged = Instant::now();
+            let mut last_update = Instant::now();
+            let interval = if interactive {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_secs(1)
+            };
             let mut buffer = [0u8; 64 * 1024];
             loop {
                 let read = response
@@ -371,18 +382,26 @@ impl Hub {
                 hasher.update(&buffer[..read]);
                 output.write_all(&buffer[..read]).map_err(storage)?;
                 size += read as u64;
-                if last_logged.elapsed() >= Duration::from_secs(1) {
-                    tracing::info!(
-                        file = %file.path,
-                        downloaded = %human_bytes(size),
-                        total = %total.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
-                        "download progress"
-                    );
-                    last_logged = Instant::now();
+                if last_update.elapsed() >= interval {
+                    if interactive {
+                        progress.update(&progress_line(&file.path, size, total));
+                    } else {
+                        tracing::info!(
+                            file = %file.path,
+                            downloaded = %human_bytes(size),
+                            total = %total.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
+                            "download progress"
+                        );
+                    }
+                    last_update = Instant::now();
                 }
             }
             drop(output);
-            tracing::info!(file = %file.path, size = %human_bytes(size), "downloaded file");
+            if interactive {
+                progress.update(&progress_line(&file.path, size, total.or(Some(size))));
+            } else {
+                tracing::info!(file = %file.path, size = %human_bytes(size), "downloaded file");
+            }
             let digest = hex::encode(hasher.finalize());
             let invalid = file.size.is_some_and(|expected| expected != size)
                 || file
@@ -597,7 +616,10 @@ fn log_download_progress(
     events: std::sync::mpsc::Receiver<shaul::DownloadEvent>,
     stop: Arc<AtomicBool>,
 ) {
+    let interactive = std::io::stderr().is_terminal();
+    let mut progress = TerminalProgress::new(interactive);
     let mut last_logged = HashMap::new();
+    let mut last_render = None;
     loop {
         let event = match events.recv_timeout(Duration::from_millis(250)) {
             Ok(event) => event,
@@ -614,12 +636,17 @@ fn log_download_progress(
             shaul::EventKind::FileStarted {
                 file, total_bytes, ..
             } => {
-                last_logged.insert(file.clone(), Instant::now());
-                tracing::info!(
-                    file = %file,
-                    total = %total_bytes.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
-                    "downloading file"
-                );
+                if interactive {
+                    progress.update(&progress_line(&file, 0, total_bytes));
+                    last_render = Some(Instant::now());
+                } else {
+                    last_logged.insert(file.clone(), Instant::now());
+                    tracing::info!(
+                        file = %file,
+                        total = %total_bytes.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
+                        "downloading file"
+                    );
+                }
             }
             shaul::EventKind::Progress {
                 file,
@@ -628,29 +655,116 @@ fn log_download_progress(
                 ..
             } => {
                 let now = Instant::now();
-                let due = match last_logged.get(&file) {
-                    Some(previous) => now.duration_since(*previous) >= Duration::from_secs(1),
-                    None => true,
-                };
-                if due {
-                    last_logged.insert(file.clone(), now);
-                    tracing::info!(
-                        file = %file,
-                        downloaded = %human_bytes(downloaded_bytes),
-                        total = %total_bytes.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
-                        "download progress"
-                    );
+                if interactive {
+                    let due = last_render.is_none_or(|previous| {
+                        now.duration_since(previous) >= Duration::from_millis(100)
+                    });
+                    if due {
+                        progress.update(&progress_line(&file, downloaded_bytes, total_bytes));
+                        last_render = Some(now);
+                    }
+                } else {
+                    let due = last_logged.get(&file).is_none_or(|previous| {
+                        now.duration_since(*previous) >= Duration::from_secs(1)
+                    });
+                    if due {
+                        last_logged.insert(file.clone(), now);
+                        tracing::info!(
+                            file = %file,
+                            downloaded = %human_bytes(downloaded_bytes),
+                            total = %total_bytes.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
+                            "download progress"
+                        );
+                    }
                 }
             }
             shaul::EventKind::FileCompleted { file, size, .. } => {
-                last_logged.remove(&file);
-                tracing::info!(file = %file, size = %human_bytes(size), "downloaded file");
+                if interactive {
+                    progress.update(&progress_line(&file, size, Some(size)));
+                } else {
+                    last_logged.remove(&file);
+                    tracing::info!(file = %file, size = %human_bytes(size), "downloaded file");
+                }
             }
             shaul::EventKind::Warning { message, .. } => {
+                if interactive {
+                    progress.clear();
+                }
                 tracing::warn!(%message, "download warning");
             }
             _ => {}
         }
+    }
+    progress.clear();
+}
+
+#[cfg(feature = "hub")]
+struct TerminalProgress {
+    active: bool,
+    last_len: usize,
+}
+
+#[cfg(feature = "hub")]
+impl TerminalProgress {
+    fn new(active: bool) -> Self {
+        Self {
+            active,
+            last_len: 0,
+        }
+    }
+
+    fn update(&mut self, line: &str) {
+        if !self.active {
+            return;
+        }
+        let width = line.chars().count();
+        let padding = self.last_len.saturating_sub(width);
+        let mut stderr = std::io::stderr().lock();
+        let _ = write!(stderr, "\r{line}{}", " ".repeat(padding));
+        let _ = stderr.flush();
+        self.last_len = width;
+    }
+
+    fn clear(&mut self) {
+        if !self.active || self.last_len == 0 {
+            return;
+        }
+        let mut stderr = std::io::stderr().lock();
+        let _ = write!(stderr, "\r{}\r", " ".repeat(self.last_len));
+        let _ = stderr.flush();
+        self.last_len = 0;
+    }
+}
+
+#[cfg(feature = "hub")]
+impl Drop for TerminalProgress {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+#[cfg(feature = "hub")]
+fn progress_line(file: &str, downloaded: u64, total: Option<u64>) -> String {
+    let name = if file.chars().count() > 48 {
+        let mut name = file.chars().take(45).collect::<String>();
+        name.push_str("...");
+        name
+    } else {
+        file.to_owned()
+    };
+    match total.filter(|total| *total > 0) {
+        Some(total) => {
+            let percent = downloaded.min(total).saturating_mul(100) / total;
+            let filled = (percent as usize * 20 / 100).min(20);
+            format!(
+                "pulling {name} [{}{}] {percent:>3}% {}/{}",
+                "#".repeat(filled),
+                "-".repeat(20 - filled),
+                human_bytes(downloaded),
+                human_bytes(total)
+            )
+        }
+        None => format!("pulling {name} {}", human_bytes(downloaded)),
     }
 }
 
@@ -866,6 +980,14 @@ mod tests {
             HubConfig::default().hf_endpoint.as_deref(),
             Some(DEFAULT_HF_ENDPOINT)
         );
+    }
+
+    #[test]
+    fn progress_line_shows_a_bar_and_percent() {
+        let line = progress_line("model.safetensors", 512, Some(1024));
+        assert!(line.contains("pulling model.safetensors"));
+        assert!(line.contains("50%"));
+        assert!(line.contains("512 B/1.0 KiB"));
     }
 
     #[test]

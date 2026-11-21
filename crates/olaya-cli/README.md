@@ -94,7 +94,8 @@ olaya models export --dir ./registry
 - `OLAYA_REGISTRY_URL` selects a hosted catalog bundle.
 - `--registry-store` uses the content-addressed store as the catalog.
 - Pulling a router such as `laya:latest` pulls every routed checkpoint (`laya` and
-  `laya-multilingual`). Per-file download progress is logged to stderr.
+  `laya-multilingual`). In a terminal, per-file progress refreshes a single bar/percent line on
+  stderr; redirected output receives periodic progress logs instead.
 - Hugging Face downloads default to `https://hf-mirror.com`; set
   `HF_ENDPOINT=https://huggingface.co` to use the official endpoint.
 - `models list` groups aliases under each canonical model; `--all` emits the flat API-style list.

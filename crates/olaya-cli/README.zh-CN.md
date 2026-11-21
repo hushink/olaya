@@ -92,7 +92,7 @@ olaya models export --dir ./registry
 - `OLAYA_REGISTRY_URL` 选择托管的 catalog bundle。
 - `--registry-store` 将内容寻址 store 当作目录。
 - 拉取 `laya:latest` 这类 router 时会同时拉取所有路由目标（`laya` 和 `laya-multilingual`）；
-  每个文件的下载进度会输出到 stderr。
+  在终端中会用单行进度条/百分比刷新当前文件进度，重定向输出时改为周期性日志。
 - Hugging Face 下载默认使用 `https://hf-mirror.com`；设置
   `HF_ENDPOINT=https://huggingface.co` 可使用官方端点。
 - `models list` 默认把 alias 归到规范模型下；`--all` 输出与 API 一致的扁平列表。
