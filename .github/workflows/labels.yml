@@ -24,7 +24,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The manifest owns the full label set. The repository has no issues or
       # pull requests yet, so removing unused GitHub defaults is safe.
