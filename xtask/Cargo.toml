@@ -11,5 +11,5 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
-olaya-core = { version = "0.1.1", path = "../crates/olaya-core" }
+olaya-core = { version = "0.1.2", path = "../crates/olaya-core" }
 serde_json.workspace = true
