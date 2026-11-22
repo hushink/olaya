@@ -36,12 +36,14 @@ Windows 上请在 **x64 Native Tools Command Prompt** 中运行 CUDA 安装命�
 
 `serve`、`ask` 和模型命令共享一份 TOML 配置。CLI 依次查找 `./olaya.toml`、`./sys1.toml`、
 `~/.olaya/config.toml`；可用 `--config` 或 `OLAYA_CONFIG` 指定其他文件。相对路径相对于配置文件
-所在目录解析。
+所在目录解析。如果不存在配置文件，CLI 会在首次使用时向 `~/.olaya/config.toml` 写入与编译
+feature 相关的模板。
 
 ```toml
 [engine]
-device = "cuda"
-dtype = "f16"
+# "auto" 在构建包含 CUDA 且 GPU 可用时使用 CUDA，其次 Metal，否则回退 CPU。
+device = "auto"
+dtype = "f32"
 default_model = "laya:latest"
 
 [serve]
@@ -94,7 +96,7 @@ olaya serve --host 127.0.0.1 --port 11435
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--device` | `cpu` | `cpu`、`cuda` 或 `metal` |
+| `--device` | `auto` | `auto`、`cpu`、`cuda` 或 `metal` |
 | `--dtype` | `f32` | CUDA/Metal 上的 `f32`、`f16` 或 `bf16` |
 | `--tf32` | 关闭 | 允许 CUDA 使用 TF32 GEMM |
 | `--max-batch` | `32` | 单次批处理前向的请求数 |
@@ -107,8 +109,9 @@ olaya serve --host 127.0.0.1 --port 11435
 
 ## 模型目录
 
-全新安装后，CLI 会从最新 GitHub Release 拉取 catalog bundle，并缓存到
-`~/.olaya/cache/registry-catalog.json`；后续命令复用缓存。
+全新安装后，CLI 会先把编译进二进制的清单写入 `~/.olaya/registry`，再从最新 GitHub Release
+拉取 catalog bundle 并缓存到 `~/.olaya/cache/registry-catalog.json`。后续命令复用缓存；当远端
+清单和缓存都不可用时，使用本地 registry 目录作为 fallback。
 
 ```sh
 olaya models list

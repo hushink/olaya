@@ -139,7 +139,7 @@ Useful server options:
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | Bind address |
 | `--port` | `11435` | HTTP port |
-| `--device` | `cpu` | `cpu`, `cuda`, or `metal` |
+| `--device` | `auto` | `auto`, `cpu`, `cuda`, or `metal` |
 | `--dtype` | `f32` | `f32`, `f16`, or `bf16` on CUDA/Metal |
 | `--tf32` | off | Allow TF32 tensor-core GEMMs on CUDA |
 | `--max-batch` | `32` | Requests collected into one forward pass |
@@ -155,12 +155,15 @@ Useful server options:
 
 `serve`, `ask`, and the model commands share a TOML configuration. The CLI looks for `./olaya.toml`,
 then `./sys1.toml`, then `~/.olaya/config.toml`; override the path with `--config` or
-`OLAYA_CONFIG`. Relative paths are resolved against the configuration file.
+`OLAYA_CONFIG`. Relative paths are resolved against the configuration file. If no file exists, the
+CLI writes a feature-aware template to `~/.olaya/config.toml` on first use.
 
 ```toml
 [engine]
-device = "cuda"
-dtype = "f16"
+# "auto" uses CUDA when the build supports it and a GPU is available, then Metal,
+# and falls back to CPU.
+device = "auto"
+dtype = "f32"
 default_model = "laya:latest"
 
 [serve]
@@ -295,9 +298,10 @@ official endpoint. The catalog itself is published with each release and cached 
 
 ## Catalog and storage
 
-On a fresh install, the CLI reads the catalog bundle from the latest GitHub Release, caches it under
-`~/.olaya/cache/registry-catalog.json`, and reuses that cache on later commands. To use a different
-catalog:
+On a fresh install, the CLI seeds `~/.olaya/registry` with the manifests embedded in the binary, then
+reads the catalog bundle from the latest GitHub Release and caches it under
+`~/.olaya/cache/registry-catalog.json`. Later commands reuse the cache; if both the remote catalog
+and cache are unavailable, the local registry directory is used. To use a different catalog:
 
 ```sh
 # Local directory of manifests
@@ -324,7 +328,7 @@ store act as the catalog.
 | `OLAYA_CACHE_DIR` | `$OLAYA_HOME/cache` | Downloads, staging, and the catalog cache |
 | `OLAYA_STORE_DIR` | `$OLAYA_HOME/store` | Content-addressed OCI store |
 | `OLAYA_TMP_DIR` | `$OLAYA_HOME/tmp` | Per-task download staging |
-| `OLAYA_REGISTRY_DIR` | `./registry`, then `$OLAYA_HOME/registry` | Filesystem catalog |
+| `OLAYA_REGISTRY_DIR` | `./registry`, then `$OLAYA_HOME/registry` | Filesystem catalog or local fallback |
 | `OLAYA_REGISTRY_URL` | Latest release asset | Hosted catalog bundle |
 | `HF_ENDPOINT` | `https://hf-mirror.com` | Hugging Face endpoint (`https://huggingface.co` for official) |
 | `MODELSCOPE_ENDPOINT` | ModelScope | ModelScope endpoint override |

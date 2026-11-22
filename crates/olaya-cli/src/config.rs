@@ -3,10 +3,50 @@
 //! Precedence is CLI flag > environment variable > file value > built-in
 //! default. Relative paths are resolved against the configuration file.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+
+/// Template written to `$OLAYA_HOME/config.toml` on first use.
+///
+/// The device default is `auto` so a CUDA/Metal build uses its accelerator
+/// without baking a machine-specific value into the generated file.
+pub fn default_config_text() -> String {
+    format!(
+        r#"# olaya shared configuration.
+#
+# Precedence: CLI flag > environment variable > this file > built-in default.
+# Relative paths are resolved against this file's directory.
+
+[engine]
+# `auto` uses CUDA when this build supports it and a GPU is usable, then Metal,
+# and falls back to CPU. Accelerators compiled into this binary: {accelerators}.
+device = "auto"
+# Weight dtype on CUDA/Metal: f32, f16, or bf16 (CPU always computes in f32).
+dtype = "f32"
+tf32 = false
+default_model = "laya:latest"
+
+[serve]
+host = "127.0.0.1"
+port = 11435
+max_batch = 32
+batch_wait_ms = 2
+
+[hub]
+# Hugging Face downloads use the mirror by default.
+# hf_endpoint = "https://hf-mirror.com"
+
+[registry]
+# Use a local manifest directory instead of the release catalog.
+# dir = "./registry"
+# store = false
+"#,
+        accelerators = olaya::olaya_candle::device::compiled_accelerators()
+    )
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,20 +111,61 @@ pub struct LoadedConfig {
 impl LoadedConfig {
     /// Load an explicit `--config` / `OLAYA_CONFIG` path, otherwise search
     /// `./olaya.toml`, `./sys1.toml`, and `$OLAYA_HOME/config.toml`.
+    ///
+    /// If none exists, write a feature-aware template to
+    /// `$OLAYA_HOME/config.toml` and load it. A missing home directory or a
+    /// read-only filesystem is not fatal: the command continues with defaults.
     pub fn load(explicit: Option<&Path>) -> Result<Self> {
         if let Some(path) = explicit {
             return Self::read(path);
         }
-        for path in default_paths() {
+        let paths = default_paths();
+        for path in &paths {
             if path.is_file() {
-                return Self::read(&path);
+                return Self::read(path);
             }
         }
-        Ok(Self {
-            file: FileConfig::default(),
-            path: None,
-            base: std::env::current_dir().context("reading the current directory")?,
-        })
+        let path = paths
+            .last()
+            .expect("default_paths always contains the user configuration");
+        match Self::write_default(path) {
+            Ok(()) => {
+                tracing::info!(path = %path.display(), "created default configuration");
+                Self::read(path)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "could not create the default configuration; using built-in defaults"
+                );
+                Ok(Self {
+                    file: FileConfig::default(),
+                    path: None,
+                    base: std::env::current_dir().context("reading the current directory")?,
+                })
+            }
+        }
+    }
+
+    fn write_default(path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(mut file) => file
+                .write_all(default_config_text().as_bytes())
+                .with_context(|| format!("writing configuration {}", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(error) => {
+                Err(error).with_context(|| format!("creating configuration {}", path.display()))
+            }
+        }
     }
 
     fn read(path: &Path) -> Result<Self> {
@@ -165,5 +246,16 @@ max_batch = 8
             .expect("current directory")
             .join("models");
         assert_eq!(resolve_path(base, &absolute), absolute);
+    }
+
+    #[test]
+    fn generated_template_is_parseable_and_feature_aware() {
+        let text = default_config_text();
+        let config: FileConfig = toml::from_str(&text).expect("generated template parses");
+        assert_eq!(config.engine.device.as_deref(), Some("auto"));
+        assert_eq!(config.engine.default_model.as_deref(), Some("laya:latest"));
+        assert!(!text.contains("workspace"));
+        assert!(!text.contains("RustRover"));
+        assert!(text.contains(olaya::olaya_candle::device::compiled_accelerators()));
     }
 }

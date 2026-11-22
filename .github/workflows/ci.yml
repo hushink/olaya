@@ -43,6 +43,7 @@ jobs:
       - run: cargo test -p olaya --features serve --test serve_contract
       - run: cargo run -p xtask -- sync-registry --output "$RUNNER_TEMP/registry-catalog.json"
       - run: jq -e '.schema_version == 1 and ((.manifests | length) > 0)' "$RUNNER_TEMP/registry-catalog.json" > /dev/null
+      - run: cargo run -p xtask -- check-embedded-registry
 
   features:
     runs-on: ubuntu-latest

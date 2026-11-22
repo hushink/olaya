@@ -9,10 +9,30 @@
   "layout": "laya-markers-v1",
   "subfolder": "typed-decisions",
   "files": [
-    { "path": "model.safetensors", "role": "weights" },
-    { "path": "tokenizer/tokenizer.json", "role": "tokenizer" },
-    { "path": "rl_agent_config.json", "role": "calibration" },
-    { "path": "encoder/config.json", "role": "config" }
+    {
+      "path": "model.safetensors",
+      "role": "weights",
+      "sha256": "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e",
+      "size": 842609220
+    },
+    {
+      "path": "tokenizer/tokenizer.json",
+      "role": "tokenizer",
+      "sha256": "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+      "size": 3583228
+    },
+    {
+      "path": "rl_agent_config.json",
+      "role": "calibration",
+      "sha256": "ebf0cd524d92342a6be5e48e9fca3d7c2babfb5a56ccd79d2171ef5d8c7f7be8",
+      "size": 847
+    },
+    {
+      "path": "encoder/config.json",
+      "role": "config",
+      "sha256": "5268d24ad3b77c8151de5dcb0762ba4391619aad9ab0bda33e36fb083cfeae6d",
+      "size": 2084
+    }
   ],
   "calibration_mode": "raw",
   "capabilities": {
@@ -25,5 +45,6 @@
   "license": "Apache-2.0",
   "description": "Laya typed-decisions decision model",
   "release_date": "2026-09-23",
-  "source": "hf://convaiinnovations/laya"
+  "source": "hf://convaiinnovations/laya",
+  "revision": "fd4f9dbcf4fde222fd43174bdd4c3b08b789e4e1"
 }

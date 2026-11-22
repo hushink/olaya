@@ -134,7 +134,7 @@ curl http://127.0.0.1:11435/v1/systemone \
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | 绑定地址 |
 | `--port` | `11435` | HTTP 端口 |
-| `--device` | `cpu` | `cpu`、`cuda` 或 `metal` |
+| `--device` | `auto` | `auto`、`cpu`、`cuda` 或 `metal` |
 | `--dtype` | `f32` | CUDA/Metal 上的 `f32`、`f16` 或 `bf16` |
 | `--tf32` | 关闭 | 允许 CUDA 使用 TF32 tensor-core GEMM |
 | `--max-batch` | `32` | 单次前向收集的请求数 |
@@ -149,12 +149,14 @@ curl http://127.0.0.1:11435/v1/systemone \
 
 `serve`、`ask` 和模型命令共享一份 TOML 配置。CLI 依次查找 `./olaya.toml`、`./sys1.toml`、
 `~/.olaya/config.toml`，也可以用 `--config` 或 `OLAYA_CONFIG` 指定路径。相对路径相对于配置文件
-所在目录解析。
+所在目录解析。如果不存在配置文件，CLI 会在首次使用时向 `~/.olaya/config.toml` 写入与编译 feature
+相关的模板。
 
 ```toml
 [engine]
-device = "cuda"
-dtype = "f16"
+# "auto" 在构建包含 CUDA 且 GPU 可用时使用 CUDA，其次 Metal，否则回退 CPU。
+device = "auto"
+dtype = "f32"
 default_model = "laya:latest"
 
 [serve]
@@ -287,8 +289,9 @@ release 发布，并在本地缓存。
 
 ## 目录与存储
 
-全新安装后，CLI 会从最新 GitHub Release 读取 catalog bundle，缓存到
-`~/.olaya/cache/registry-catalog.json`，后续命令复用缓存。切换目录来源：
+全新安装后，CLI 会先把编译进二进制的清单写入 `~/.olaya/registry`，再从最新 GitHub Release
+读取 catalog bundle 并缓存到 `~/.olaya/cache/registry-catalog.json`。后续命令复用缓存；当远端
+清单和缓存都不可用时，会使用本地 registry 目录作为 fallback。切换目录来源：
 
 ```sh
 # 本地 manifest 目录
@@ -314,7 +317,7 @@ olaya models export --dir ./registry
 | `OLAYA_CACHE_DIR` | `$OLAYA_HOME/cache` | 下载、暂存和目录缓存 |
 | `OLAYA_STORE_DIR` | `$OLAYA_HOME/store` | 内容寻址 OCI store |
 | `OLAYA_TMP_DIR` | `$OLAYA_HOME/tmp` | 单任务下载暂存 |
-| `OLAYA_REGISTRY_DIR` | `./registry`，其次 `$OLAYA_HOME/registry` | 文件系统目录 |
+| `OLAYA_REGISTRY_DIR` | `./registry`，其次 `$OLAYA_HOME/registry` | 文件系统目录或本地 fallback |
 | `OLAYA_REGISTRY_URL` | 最新 release asset | 托管 catalog bundle |
 | `HF_ENDPOINT` | `https://hf-mirror.com` | Hugging Face endpoint（官方为 `https://huggingface.co`） |
 | `MODELSCOPE_ENDPOINT` | ModelScope | ModelScope endpoint 覆盖 |

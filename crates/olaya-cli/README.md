@@ -37,12 +37,15 @@ to the full path of `cl.exe`; otherwise `nvcc` fails with `Cannot find compiler 
 
 `serve`, `ask`, and the model commands share a TOML configuration. The CLI searches
 `./olaya.toml`, `./sys1.toml`, then `~/.olaya/config.toml`; use `--config` or `OLAYA_CONFIG` to
-choose another file. Relative paths are resolved against the file.
+choose another file. Relative paths are resolved against the file. If no file exists, the CLI writes
+a feature-aware template to `~/.olaya/config.toml` on first use.
 
 ```toml
 [engine]
-device = "cuda"
-dtype = "f16"
+# "auto" uses CUDA when the build supports it and a GPU is available, then Metal,
+# and falls back to CPU.
+device = "auto"
+dtype = "f32"
 default_model = "laya:latest"
 
 [serve]
@@ -96,7 +99,7 @@ management API under `/api/*`.
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `--device` | `cpu` | `cpu`, `cuda`, or `metal` |
+| `--device` | `auto` | `auto`, `cpu`, `cuda`, or `metal` |
 | `--dtype` | `f32` | `f32`, `f16`, or `bf16` on CUDA/Metal |
 | `--tf32` | off | Allow TF32 GEMMs on CUDA |
 | `--max-batch` | `32` | Requests per batched forward pass |
@@ -109,8 +112,10 @@ management API under `/api/*`.
 
 ## Model catalog
 
-On a fresh install, the CLI fetches the catalog bundle from the latest GitHub Release and caches it
-under `~/.olaya/cache/registry-catalog.json`. Later commands reuse the cache.
+On a fresh install, the CLI seeds `~/.olaya/registry` with the manifests embedded in the binary, then
+fetches the catalog bundle from the latest GitHub Release and caches it under
+`~/.olaya/cache/registry-catalog.json`. Later commands reuse the cache; if the remote catalog and
+cache are unavailable, the local registry directory is used.
 
 ```sh
 olaya models list

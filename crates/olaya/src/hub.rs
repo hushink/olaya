@@ -523,16 +523,25 @@ impl Hub {
 
         let engine = shaul::default_blocking_engine(config).map_err(registry)?;
         let link = shaul::Link::new(source).map_err(registry)?;
+        // shaul treats a Hub non-LFS file's git blob id as a plain SHA-1, so
+        // its provider verification rejects valid files. Disable it here and
+        // re-verify every authoritative sha256 (LFS blobs) after the download
+        // instead; manifests that declare all sha256 values are verified by
+        // Store::import.
+        let verify_after_download = verify_provider;
+        if verify_after_download {
+            tracing::debug!(
+                endpoint = self.config.hf_endpoint.as_deref().unwrap_or("-"),
+                "provider git-blob checksums are not enforced; \
+                 sha256 checksums are verified after download"
+            );
+        }
         let options = shaul::TaskOptions {
             include: paths.to_vec(),
             overwrite: true,
-            verify: Some(if verify_provider {
-                shaul::VerifyMode::Auto
-            } else {
-                // The manifest declares sha256 for every file; Store::import
-                // verifies those bytes after the download.
-                shaul::VerifyMode::Disabled
-            }),
+            // Verification happens below (authoritative sha256) or in
+            // Store::import (manifests that declare every file's sha256).
+            verify: Some(shaul::VerifyMode::Disabled),
             revision: revision.map(str::to_owned),
             ..Default::default()
         };
@@ -550,6 +559,9 @@ impl Hub {
         stop.store(true, Ordering::Relaxed);
         let _ = progress.join();
         let task = downloaded?;
+        if verify_after_download {
+            verify_task_checksums(destination, &task)?;
+        }
 
         tracing::info!(
             state = ?task.state,
@@ -615,6 +627,52 @@ impl Hub {
             message: format!("parsing {}: {error}", manifest_path.display()),
         })
     }
+}
+
+/// Re-verify the checksums shaul knows are authoritative (currently LFS
+/// sha256) when its provider verification is bypassed.
+#[cfg(feature = "hub")]
+fn verify_task_checksums(destination: &Path, task: &shaul::Task) -> Result<(), RuntimeError> {
+    for file in &task.files {
+        if !file.selected {
+            continue;
+        }
+        let Some(expected) = &file.checksum else {
+            continue;
+        };
+        if expected.algorithm != shaul::ChecksumAlgorithm::Sha256 {
+            continue;
+        }
+        let path =
+            find_downloaded(destination, &file.path).ok_or_else(|| RuntimeError::Storage {
+                message: format!("downloaded file {} is missing", file.path),
+            })?;
+        let actual = sha256_file(&path)?;
+        if !actual.eq_ignore_ascii_case(&expected.hex) {
+            return Err(RuntimeError::Registry {
+                message: format!(
+                    "checksum mismatch for {}: expected sha256:{}, got sha256:{actual}",
+                    file.path, expected.hex
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "hub")]
+fn sha256_file(path: &Path) -> Result<String, RuntimeError> {
+    let mut file = std::fs::File::open(path).map_err(storage)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(storage)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 #[cfg(feature = "hub")]

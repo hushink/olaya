@@ -1,4 +1,5 @@
 mod config;
+mod registry_seed;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -193,15 +194,61 @@ fn main() -> Result<()> {
     }
 }
 
+fn load_remote_catalog(
+    cache_dir: &std::path::Path,
+    refresh: bool,
+) -> Result<(Vec<RepoManifest>, &'static str)> {
+    let registry = olaya::RemoteRegistry::from_env(cache_dir)?;
+    let (manifests, source) = registry.load(refresh).with_context(|| {
+        format!(
+            "loading the remote catalog from {}; set OLAYA_REGISTRY_URL, \
+             pass --registry-dir, or use --registry-store",
+            registry.url()
+        )
+    })?;
+    tracing::info!(
+        url = registry.url(),
+        source = source.as_str(),
+        models = manifests.len(),
+        "remote catalog loaded"
+    );
+    Ok((manifests, source.as_str()))
+}
+
 /// Load the filesystem registry, falling back to the remote catalog when the
 /// default directory is missing or empty and the user did not ask for a
 /// specific registry.
+///
+/// For the implicit `$OLAYA_HOME/registry` directory, the remote catalog (or
+/// its cache) is authoritative and seeds the local directory on first use, so
+/// later offline runs have a fallback.
 fn registry_manifests(
     dir: &std::path::Path,
     allow_remote: bool,
     cache_dir: &std::path::Path,
     refresh: bool,
 ) -> Result<(Vec<RepoManifest>, &'static str)> {
+    let remote_first = allow_remote && dir == olaya::hub::default_root().join("registry");
+    if remote_first {
+        initialize_registry_seed(dir);
+        match load_remote_catalog(cache_dir, refresh) {
+            Ok((manifests, source)) => {
+                initialize_registry_fallback(dir, &manifests);
+                return Ok((manifests, source));
+            }
+            Err(remote_error) => match olaya::load_manifests(dir) {
+                Ok(manifests) => {
+                    tracing::warn!(
+                        dir = %dir.display(),
+                        error = %remote_error,
+                        "remote catalog unavailable; using the local registry fallback"
+                    );
+                    return Ok((manifests, "dir-fallback"));
+                }
+                Err(_) => return Err(remote_error),
+            },
+        }
+    }
     match olaya::load_manifests(dir) {
         Ok(manifests) => Ok((manifests, "dir")),
         Err(error) if allow_remote && registry_is_empty(dir) => {
@@ -210,23 +257,61 @@ fn registry_manifests(
                 %error,
                 "registry directory is unavailable; using the remote catalog"
             );
-            let registry = olaya::RemoteRegistry::from_env(cache_dir)?;
-            let (manifests, source) = registry.load(refresh).with_context(|| {
-                format!(
-                    "loading the remote catalog from {}; set OLAYA_REGISTRY_URL, \
-                     pass --registry-dir, or use --registry-store",
-                    registry.url()
-                )
-            })?;
-            tracing::info!(
-                url = registry.url(),
-                source = source.as_str(),
-                models = manifests.len(),
-                "remote catalog loaded"
-            );
-            Ok((manifests, source.as_str()))
+            load_remote_catalog(cache_dir, refresh)
         }
         Err(error) => Err(error).with_context(|| format!("loading registry {}", dir.display())),
+    }
+}
+
+/// Seed the implicit registry directory with the manifests compiled into the
+/// CLI. This gives a fresh offline install a working catalog before the first
+/// remote fetch.
+fn initialize_registry_seed(dir: &std::path::Path) {
+    if !registry_is_empty(dir) {
+        return;
+    }
+    let mut manifests = Vec::with_capacity(registry_seed::MANIFESTS.len());
+    for (path, text) in registry_seed::MANIFESTS {
+        match serde_json::from_str::<RepoManifest>(text) {
+            Ok(manifest) => manifests.push(manifest),
+            Err(error) => {
+                tracing::warn!(path, %error, "embedded registry manifest is invalid");
+                return;
+            }
+        }
+    }
+    match olaya::export_registry(&manifests, dir, true) {
+        Ok(report) => tracing::info!(
+            dir = %dir.display(),
+            written = report.written,
+            "seeded the local registry fallback"
+        ),
+        Err(error) => tracing::warn!(
+            dir = %dir.display(),
+            %error,
+            "could not seed the local registry fallback"
+        ),
+    }
+}
+
+/// Write the loaded catalog into the implicit registry directory when it is
+/// still empty. Later runs can use it when the network and catalog cache fail.
+fn initialize_registry_fallback(dir: &std::path::Path, manifests: &[RepoManifest]) {
+    if !registry_is_empty(dir) {
+        return;
+    }
+    match olaya::export_registry(manifests, dir, true) {
+        Ok(report) => tracing::info!(
+            dir = %dir.display(),
+            written = report.written,
+            unchanged = report.unchanged,
+            "initialized local registry fallback"
+        ),
+        Err(error) => tracing::warn!(
+            dir = %dir.display(),
+            %error,
+            "could not initialize the local registry fallback"
+        ),
     }
 }
 
@@ -317,15 +402,21 @@ fn engine_builder_from(
     dtype: Option<&str>,
     tf32: bool,
 ) -> Result<olaya::EngineBuilder> {
-    let device = device
+    let device_preference = device
         .or(loaded.file.engine.device.as_deref())
-        .unwrap_or("cpu");
+        .unwrap_or("auto");
+    let resolved_device = olaya::olaya_candle::device::resolve(device_preference)?;
+    tracing::debug!(
+        preference = device_preference,
+        device = ?resolved_device,
+        "engine device resolved"
+    );
     let dtype = dtype
         .or(loaded.file.engine.dtype.as_deref())
         .unwrap_or("f32");
     let mut builder = Engine::builder()
         .builtin_families(BuiltinFamilies::all())
-        .device(olaya::olaya_candle::device::resolve(device)?)
+        .device(resolved_device)
         .dtype(parse_dtype(dtype)?)
         .tf32(tf32 || loaded.file.engine.tf32.unwrap_or(false));
     if let Some(model) = &loaded.file.engine.default_model {
@@ -660,8 +751,18 @@ fn doctor(
     let stored_models = olaya::Store::open(&hub.store_dir)
         .list()
         .unwrap_or_default();
+    let device_preference = loaded.file.engine.device.as_deref().unwrap_or("auto");
+    let device = olaya::olaya_candle::device::resolve(device_preference)
+        .map(|device| format!("{device:?}"))
+        .unwrap_or_else(|error| format!("error: {error}"));
     let report = json!({
         "config_file": loaded.path.as_ref().map(|path| path.display().to_string()),
+        "device_preference": device_preference,
+        "device": device,
+        "compiled_accelerators": olaya::olaya_candle::device::compiled_accelerators(),
+        "dtype": loaded.file.engine.dtype.as_deref().unwrap_or("f32"),
+        "tf32": loaded.file.engine.tf32.unwrap_or(false),
+        "default_model": loaded.file.engine.default_model.as_deref(),
         "registry_dir": registry_dir.display().to_string(),
         "registry_source": registry_source,
         "registry_models": registry_models,
@@ -697,5 +798,27 @@ fn parse_dtype(value: &str) -> Result<olaya::candle_core::DType> {
         "f16" => Ok(olaya::candle_core::DType::F16),
         "bf16" => Ok(olaya::candle_core::DType::BF16),
         other => anyhow::bail!("unknown dtype {other:?}; expected f32, f16, or bf16"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seeds_a_missing_registry_from_embedded_manifests() {
+        let dir = std::env::temp_dir().join(format!(
+            "olaya-cli-seed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        initialize_registry_seed(&dir);
+        let manifests = olaya::load_manifests(&dir).expect("embedded seed loads");
+        assert_eq!(manifests.len(), registry_seed::MANIFESTS.len());
+        assert!(manifests.iter().any(|manifest| manifest.name == "laya"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
