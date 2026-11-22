@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/hushink/olaya/compare/olaya-v0.1.5...olaya-v0.1.6) - 2026-11-22
+
+### Added
+
+- *(cli)* initialize offline registry and feature-aware defaults
+
 ## [0.1.5](https://github.com/hushink/olaya/compare/olaya-v0.1.4...olaya-v0.1.5) - 2026-11-21
 
 ### Added
