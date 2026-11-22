@@ -1953,7 +1953,7 @@ dependencies = [
 
 [[package]]
 name = "olaya"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "axum",
  "candle-core",
@@ -1978,7 +1978,7 @@ dependencies = [
 
 [[package]]
 name = "olaya-candle"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -1995,7 +1995,7 @@ dependencies = [
 
 [[package]]
 name = "olaya-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "olaya-conformance"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "indexmap",
  "olaya",
@@ -2023,7 +2023,7 @@ dependencies = [
 
 [[package]]
 name = "olaya-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "indexmap",
  "serde",
@@ -2034,7 +2034,7 @@ dependencies = [
 
 [[package]]
 name = "olaya-sdk"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "base64 0.23.1",
  "flate2",
@@ -3811,7 +3811,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "olaya-core",
