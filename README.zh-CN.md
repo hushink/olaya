@@ -139,6 +139,8 @@ curl http://127.0.0.1:11435/v1/systemone \
 | `--tf32` | 关闭 | 允许 CUDA 使用 TF32 tensor-core GEMM |
 | `--max-batch` | `32` | 单次前向收集的请求数 |
 | `--batch-wait-ms` | `2` | 首个请求的等待窗口 |
+| `--max-body-bytes` | `8388608` | HTTP 请求体上限 |
+| `--max-queue` | `64` | 批处理队列上限 |
 | `--api-key` | `OLAYA_API_KEY` | 除 `/health` 外所有路由的 Bearer token |
 
 > [!WARNING]
@@ -157,24 +159,41 @@ curl http://127.0.0.1:11435/v1/systemone \
 # "auto" 在构建包含 CUDA 且 GPU 可用时使用 CUDA，其次 Metal，否则回退 CPU。
 device = "auto"
 dtype = "f32"
+tf32 = false
 default_model = "laya:latest"
+max_loaded = 3
 
 [serve]
 host = "127.0.0.1"
 port = 11435
+# api_key = "..."
+allow_unauthenticated = false
 max_batch = 32
 batch_wait_ms = 2
+max_body_bytes = 8388608
+max_queue = 64
 
 [hub]
+# models_dir = "models"
+# cache_dir = "cache"
+# tmp_dir = "tmp"
+# store_dir = "store"
+# offline = false
 hf_endpoint = "https://hf-mirror.com"
+# modelscope_endpoint = "https://www.modelscope.cn"
+# proxy = "http://127.0.0.1:7890"
 
 [registry]
 # dir = "./registry"
 # store = false
+# url = "https://github.com/hushink/olaya/releases/latest/download/registry-catalog.json"
+timeout_secs = 30
 ```
 
-优先级为 CLI 参数 > 环境变量 > 配置文件 > 内置默认值。运行 `olaya doctor` 可以查看当前加载的
-配置文件路径和生效的存储设置。
+优先级为 CLI 参数 > 环境变量 > 配置文件 > 内置默认值。布尔 CLI/env 支持显式 false
+（`--tf32=false`、`OLAYA_OFFLINE=false`），可以覆盖配置文件里的 `true`。运行 `olaya doctor`
+可以查看当前加载的配置文件路径和每一项生效设置。完整键、环境变量、各命令生效范围和示例见
+[`docs/configuration.md`](docs/configuration.md)。
 
 ### 作为 Rust 库使用
 
@@ -222,6 +241,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 engine 还提供 `ask_typed`（返回类型化答案集）、`ask_batch` / `ask_batch_responses`（共享一次前向），
 以及显式的 `load` / `unload`。
+
+显式选择设备和精度：
+
+```rust
+use olaya::{BuiltinFamilies, Engine, olaya_candle::device};
+use olaya::candle_core::DType;
+
+let device = device::resolve("auto")?; // 编译了 CUDA/Metal 且可用时优先，否则 CPU
+let engine = Engine::builder()
+    .builtin_families(BuiltinFamilies::all())
+    .registry_dir("registry")?
+    .device(device)
+    .dtype(DType::F16)
+    .tf32(true)
+    .max_loaded(2)
+    .default_model("laya:latest")
+    .build()?;
+```
+
+把多个请求合批：
+
+```rust
+use olaya::{Questions, State};
+
+let requests = vec![
+    (State::text("Refund please"), Questions::new().noul("refund", "Is this a refund request?")),
+    (State::text("The app crashes"), Questions::new().noul("bug", "Is this a bug report?")),
+];
+let refs = requests.iter().map(|(s, q)| (s, q)).collect::<Vec<_>>();
+for result in engine.ask_batch("laya", &refs) {
+    println!("{:?}", result?);
+}
+```
+
+从 Hub 拉取并复用 content store：
+
+```rust
+use std::sync::Arc;
+use olaya::{Hub, HubConfig, Store, StoreRegistry};
+
+let config = HubConfig::default();
+let hub = Hub::new(config.clone());
+let manifest = hub.pull("laya:latest", None)?;
+
+let store = Arc::new(Store::open(&config.store_dir));
+let engine = Engine::builder()
+    .builtin_families(olaya::BuiltinFamilies::all())
+    .registry(Arc::new(StoreRegistry::new(store.clone())))?
+    .store(store)
+    .build()?;
+println!("engine has {} manifests", engine.manifests().len());
+```
+
+启用 `serve` feature 后嵌入 HTTP 服务：
+
+```rust
+use std::sync::Arc;
+use olaya::{DecisionRuntime, ServeConfig};
+
+let runtime: Arc<dyn DecisionRuntime> = Arc::new(engine);
+let config = ServeConfig {
+    host: "127.0.0.1".to_owned(),
+    port: 11435,
+    api_key: Some("secret".to_owned()),
+    ..ServeConfig::default()
+};
+olaya::serve::serve(runtime, config).await?;
+```
+
+[`docs/library.md`](docs/library.md) 还包含自定义 `ManifestRegistry`、store 校验、指标、显式
+load/unload、错误类型和并发说明。
 
 ### 使用客户端 SDK
 
@@ -322,8 +412,21 @@ olaya models export --dir ./registry
 | `HF_ENDPOINT` | `https://hf-mirror.com` | Hugging Face endpoint（官方为 `https://huggingface.co`） |
 | `MODELSCOPE_ENDPOINT` | ModelScope | ModelScope endpoint 覆盖 |
 | `OLAYA_PROXY` | 未设置 | 模型下载代理 |
-| `OLAYA_OFFLINE` | 未设置 | 禁用网络访问 |
+| `OLAYA_OFFLINE` | `false` | 禁用网络访问 |
+| `OLAYA_REGISTRY_STORE` | `false` | 以 content store 作为 catalog |
+| `OLAYA_REGISTRY_TIMEOUT_SECS` | `30` | catalog HTTP 超时 |
+| `OLAYA_DEVICE` | `auto` | 设备偏好 |
+| `OLAYA_DTYPE` | `f32` | CUDA/Metal 权重精度 |
+| `OLAYA_TF32` | `false` | CUDA TF32 |
+| `OLAYA_DEFAULT_MODEL` | `laya:latest` | 回退模型 |
+| `OLAYA_MAX_LOADED` | `3` | 同时驻留模型数 |
+| `OLAYA_HOST` / `OLAYA_PORT` | `127.0.0.1` / `11435` | `serve` 绑定 |
 | `OLAYA_API_KEY` | 未设置 | `olaya serve` 的 Bearer token |
+| `OLAYA_ALLOW_UNAUTHENTICATED` | `false` | 允许非 loopback 无鉴权 |
+| `OLAYA_MAX_BATCH` / `OLAYA_BATCH_WAIT_MS` | `32` / `2` | 批处理前向 |
+| `OLAYA_MAX_BODY_BYTES` / `OLAYA_MAX_QUEUE` | `8388608` / `64` | HTTP body 与队列上限 |
+
+完整列表见 [`docs/configuration.md`](docs/configuration.md)。
 
 manifest 布局与 catalog 格式见 [registry/README.zh-CN.md](registry/README.zh-CN.md)。
 
@@ -386,6 +489,8 @@ RUST_LOG=olaya=debug,olaya_candle=debug olaya serve
 ## 文档
 
 - [CLI 指南](crates/olaya-cli/README.zh-CN.md)
+- [配置参考](docs/configuration.md)
+- [库 API 指南](docs/library.md)
 - [客户端 SDK 指南](crates/olaya-sdk/README.zh-CN.md)
 - [模型目录与 manifest](registry/README.zh-CN.md)
 - [设计说明](docs/design.md)

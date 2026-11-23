@@ -4,6 +4,32 @@
 //! The family implementations live in [`olaya_candle::families`]. Third-party
 //! families register through [`olaya_candle::FamilyFactory`] and
 //! [`EngineBuilder::family`]; they never depend on this crate.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use olaya::{BuiltinFamilies, Engine, Questions, State, load_manifests};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let manifests = load_manifests("registry")?;
+//! let engine = Engine::builder()
+//!     .builtin_families(BuiltinFamilies::all())
+//!     .manifests(manifests)
+//!     .build()?;
+//!
+//! let questions = Questions::new().noul("billing", "Is this about billing?");
+//! let answer = engine.ask(
+//!     "laya",
+//!     &State::text("I was charged twice."),
+//!     &questions,
+//! )?;
+//! println!("{:?}", answer.answers.get("billing"));
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! See the repository's `docs/library.md` for device selection, batching,
+//! Hub/store wiring, custom registries, metrics, and embedding the HTTP server.
 
 #![forbid(unsafe_code)]
 
@@ -29,7 +55,8 @@ pub use hub::{DEFAULT_HF_ENDPOINT, Hub, HubConfig};
 pub use registry::{FsRegistry, StoreRegistry, default_registry_dir, load_manifests};
 #[cfg(feature = "remote")]
 pub use remote::{
-    CATALOG_CACHE_FILE, CatalogSource, DEFAULT_REGISTRY_URL, REGISTRY_URL_ENV, RemoteRegistry,
+    CATALOG_CACHE_FILE, CatalogSource, DEFAULT_REGISTRY_TIMEOUT_SECS, DEFAULT_REGISTRY_URL,
+    REGISTRY_URL_ENV, RemoteRegistry,
 };
 pub use router::route_state;
 pub use store::Store;

@@ -1,7 +1,7 @@
 mod config;
 mod registry_seed;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -15,6 +15,16 @@ use serde_json::json;
 #[derive(Debug, Parser)]
 #[command(name = "olaya", version, about = "System One decision-model runtime")]
 struct Cli {
+    #[command(flatten)]
+    global: GlobalArgs,
+    #[command(subcommand)]
+    command: Command,
+}
+
+/// Settings shared by every subcommand. Values here follow
+/// CLI > environment > file > built-in default.
+#[derive(Debug, Args)]
+struct GlobalArgs {
     /// Configuration file (default: ./olaya.toml, ./sys1.toml, or ~/.olaya/config.toml).
     #[arg(long, env = "OLAYA_CONFIG", global = true)]
     config: Option<PathBuf>,
@@ -22,10 +32,74 @@ struct Cli {
     #[arg(long, env = "OLAYA_REGISTRY_DIR", global = true)]
     registry_dir: Option<PathBuf>,
     /// Use the content store as the manifest registry (no registry directory).
-    #[arg(long, global = true)]
-    registry_store: bool,
-    #[command(subcommand)]
-    command: Command,
+    #[arg(
+        long,
+        env = "OLAYA_REGISTRY_STORE",
+        global = true,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
+    registry_store: Option<bool>,
+    /// Hosted catalog bundle URL.
+    #[arg(long, env = "OLAYA_REGISTRY_URL", global = true)]
+    registry_url: Option<String>,
+    /// HTTP timeout for the hosted catalog bundle, in seconds.
+    #[arg(long, env = "OLAYA_REGISTRY_TIMEOUT_SECS", global = true)]
+    registry_timeout_secs: Option<u64>,
+    /// Materialized model directories.
+    #[arg(long, env = "OLAYA_MODELS_DIR", global = true)]
+    models_dir: Option<PathBuf>,
+    /// Downloads, staging, and catalog cache.
+    #[arg(long, env = "OLAYA_CACHE_DIR", global = true)]
+    cache_dir: Option<PathBuf>,
+    /// Per-task download staging.
+    #[arg(long, env = "OLAYA_TMP_DIR", global = true)]
+    tmp_dir: Option<PathBuf>,
+    /// Content-addressed OCI store root.
+    #[arg(long, env = "OLAYA_STORE_DIR", global = true)]
+    store_dir: Option<PathBuf>,
+    /// Hugging Face endpoint.
+    #[arg(long, env = "HF_ENDPOINT", global = true)]
+    hf_endpoint: Option<String>,
+    /// ModelScope endpoint.
+    #[arg(long, env = "MODELSCOPE_ENDPOINT", global = true)]
+    modelscope_endpoint: Option<String>,
+    /// HTTP/SOCKS proxy for model downloads.
+    #[arg(long, env = "OLAYA_PROXY", global = true)]
+    proxy: Option<String>,
+    /// Refuse every network access.
+    #[arg(
+        long,
+        env = "OLAYA_OFFLINE",
+        global = true,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
+    offline: Option<bool>,
+    /// Device preference: auto, cpu, cuda, cuda:<index>, or metal.
+    #[arg(long, env = "OLAYA_DEVICE", global = true)]
+    device: Option<String>,
+    /// Weight dtype on CUDA/Metal: f32, f16, or bf16.
+    #[arg(long, env = "OLAYA_DTYPE", global = true)]
+    dtype: Option<String>,
+    /// Allow TF32 tensor-core GEMMs on CUDA.
+    #[arg(
+        long,
+        env = "OLAYA_TF32",
+        global = true,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
+    tf32: Option<bool>,
+    /// Model used when a request leaves the model name empty.
+    #[arg(long, env = "OLAYA_DEFAULT_MODEL", global = true)]
+    default_model: Option<String>,
+    /// Maximum number of models kept loaded at once.
+    #[arg(long, env = "OLAYA_MAX_LOADED", global = true)]
+    max_loaded: Option<usize>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -42,42 +116,44 @@ enum Command {
 }
 
 #[cfg(feature = "serve")]
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Default)]
 struct ServeArgs {
-    #[arg(long)]
+    /// Bind address.
+    #[arg(long, env = "OLAYA_HOST")]
     host: Option<String>,
-    #[arg(long)]
+    /// HTTP port.
+    #[arg(long, env = "OLAYA_PORT")]
     port: Option<u16>,
+    /// Bearer token for every route except /health.
     #[arg(long, env = "OLAYA_API_KEY")]
     api_key: Option<String>,
-    #[arg(long)]
-    allow_unauthenticated: bool,
-    #[arg(long, env = "OLAYA_MODELS_DIR")]
-    models_dir: Option<PathBuf>,
-    #[arg(long, env = "OLAYA_CACHE_DIR")]
-    cache_dir: Option<PathBuf>,
-    #[arg(long, env = "OLAYA_TMP_DIR")]
-    tmp_dir: Option<PathBuf>,
-    #[arg(long, env = "OLAYA_STORE_DIR")]
-    store_dir: Option<PathBuf>,
-    #[arg(long)]
-    device: Option<String>,
-    #[arg(long)]
-    dtype: Option<String>,
+    /// Allow binding a non-loopback address without an API key.
+    #[arg(
+        long,
+        env = "OLAYA_ALLOW_UNAUTHENTICATED",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
+    allow_unauthenticated: Option<bool>,
     /// Requests collected into one batched forward pass (1 disables batching).
-    #[arg(long)]
+    #[arg(long, env = "OLAYA_MAX_BATCH")]
     max_batch: Option<usize>,
     /// Collection window for the first request of a batch.
-    #[arg(long)]
+    #[arg(long, env = "OLAYA_BATCH_WAIT_MS")]
     batch_wait_ms: Option<u64>,
-    /// Allow TF32 tensor-core GEMMs on CUDA.
-    #[arg(long)]
-    tf32: bool,
+    /// Maximum accepted HTTP request body size.
+    #[arg(long, env = "OLAYA_MAX_BODY_BYTES")]
+    max_body_bytes: Option<usize>,
+    /// Maximum queued requests before backpressure.
+    #[arg(long, env = "OLAYA_MAX_QUEUE")]
+    max_queue: Option<usize>,
 }
 
 #[derive(Debug, Args)]
 struct AskArgs {
-    #[arg(long)]
+    /// Model to call; falls back to --default-model / [engine].default_model.
+    #[arg(long, env = "OLAYA_MODEL")]
     model: Option<String>,
     /// A JSON string, object or array; `-` reads stdin.
     #[arg(long)]
@@ -85,24 +161,10 @@ struct AskArgs {
     /// A JSON file containing the `questions` object.
     #[arg(long)]
     questions: PathBuf,
-    #[arg(long)]
-    device: Option<String>,
-    /// Weight dtype on CUDA/Metal: f32, f16, or bf16 (CPU always computes in f32).
-    #[arg(long)]
-    dtype: Option<String>,
-    /// Allow TF32 tensor-core GEMMs on CUDA.
-    #[arg(long)]
-    tf32: bool,
 }
 
 #[derive(Debug, Args)]
 struct ModelsArgs {
-    /// Materialized model directories.
-    #[arg(long, env = "OLAYA_MODELS_DIR")]
-    models_dir: Option<PathBuf>,
-    /// Content-addressed OCI store root.
-    #[arg(long, env = "OLAYA_STORE_DIR")]
-    store_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: ModelsCommand,
 }
@@ -125,7 +187,7 @@ enum ModelsCommand {
     Remove { model: String },
     /// Export the catalog (remote bundle or store) into a registry directory.
     Export {
-        /// Target directory (defaults to OLAYA_REGISTRY_DIR, ./registry, or ~/.olaya/registry).
+        /// Target directory (defaults to the resolved registry directory).
         #[arg(long)]
         dir: Option<PathBuf>,
         /// Overwrite manifests that exist with different contents.
@@ -141,15 +203,179 @@ enum ModelsCommand {
 }
 
 #[derive(Debug, Args)]
-struct DoctorArgs {
-    #[arg(long, env = "OLAYA_MODELS_DIR")]
-    models_dir: Option<PathBuf>,
-    #[arg(long, env = "OLAYA_CACHE_DIR")]
-    cache_dir: Option<PathBuf>,
-    #[arg(long, env = "OLAYA_TMP_DIR")]
-    tmp_dir: Option<PathBuf>,
-    #[arg(long, env = "OLAYA_STORE_DIR")]
-    store_dir: Option<PathBuf>,
+struct DoctorArgs {}
+
+struct Settings {
+    config_path: Option<PathBuf>,
+    engine: EngineSettings,
+    hub: HubConfig,
+    registry: RegistrySettings,
+}
+
+struct EngineSettings {
+    device: String,
+    dtype: String,
+    tf32: bool,
+    default_model: Option<String>,
+    max_loaded: usize,
+}
+
+struct RegistrySettings {
+    dir: PathBuf,
+    store: bool,
+    url: String,
+    timeout_secs: u64,
+    allow_remote: bool,
+}
+
+impl Settings {
+    fn load(loaded: &LoadedConfig, global: &GlobalArgs) -> Result<Self> {
+        let file = &loaded.file;
+
+        let mut hub = HubConfig::default();
+        if let Some(path) = &file.hub.models_dir {
+            hub.models_dir = config::resolve_path(&loaded.base, path);
+        }
+        if let Some(path) = &file.hub.cache_dir {
+            hub.cache_dir = config::resolve_path(&loaded.base, path);
+        }
+        if let Some(path) = &file.hub.tmp_dir {
+            hub.tmp_dir = config::resolve_path(&loaded.base, path);
+        }
+        if let Some(path) = &file.hub.store_dir {
+            hub.store_dir = config::resolve_path(&loaded.base, path);
+        }
+        if let Some(offline) = file.hub.offline {
+            hub.offline = offline;
+        }
+        if let Some(endpoint) = clean(file.hub.hf_endpoint.as_deref()) {
+            hub.hf_endpoint = Some(endpoint.to_owned());
+        }
+        if let Some(endpoint) = clean(file.hub.modelscope_endpoint.as_deref()) {
+            hub.modelscope_endpoint = Some(endpoint.to_owned());
+        }
+        if let Some(proxy) = clean(file.hub.proxy.as_deref()) {
+            hub.proxy = Some(proxy.to_owned());
+        }
+        hub.apply_env();
+
+        if let Some(path) = &global.models_dir {
+            hub.models_dir = path.clone();
+        }
+        if let Some(path) = &global.cache_dir {
+            hub.cache_dir = path.clone();
+        }
+        if let Some(path) = &global.tmp_dir {
+            hub.tmp_dir = path.clone();
+        }
+        if let Some(path) = &global.store_dir {
+            hub.store_dir = path.clone();
+        }
+        if let Some(offline) = global.offline {
+            hub.offline = offline;
+        }
+        if let Some(endpoint) = &global.hf_endpoint {
+            hub.hf_endpoint = clean(Some(endpoint)).map(str::to_owned);
+        }
+        if let Some(endpoint) = &global.modelscope_endpoint {
+            hub.modelscope_endpoint = clean(Some(endpoint)).map(str::to_owned);
+        }
+        if let Some(proxy) = &global.proxy {
+            hub.proxy = clean(Some(proxy)).map(str::to_owned);
+        }
+
+        let engine = EngineSettings {
+            device: clean(global.device.as_deref())
+                .or_else(|| clean(file.engine.device.as_deref()))
+                .unwrap_or(config::DEFAULT_DEVICE)
+                .to_owned(),
+            dtype: clean(global.dtype.as_deref())
+                .or_else(|| clean(file.engine.dtype.as_deref()))
+                .unwrap_or(config::DEFAULT_DTYPE)
+                .to_owned(),
+            tf32: global
+                .tf32
+                .or(file.engine.tf32)
+                .unwrap_or(config::DEFAULT_TF32),
+            default_model: Some(
+                clean(
+                    global
+                        .default_model
+                        .as_deref()
+                        .or(file.engine.default_model.as_deref()),
+                )
+                .unwrap_or(config::DEFAULT_MODEL)
+                .to_owned(),
+            ),
+            max_loaded: global
+                .max_loaded
+                .or(file.engine.max_loaded)
+                .unwrap_or(config::DEFAULT_MAX_LOADED),
+        };
+        if engine.max_loaded == 0 {
+            anyhow::bail!("[engine].max_loaded must be at least 1");
+        }
+
+        let configured_registry = file
+            .registry
+            .dir
+            .as_deref()
+            .map(|dir| config::resolve_path(&loaded.base, dir));
+        let registry_explicit = global.registry_dir.is_some() || configured_registry.is_some();
+        let registry = RegistrySettings {
+            dir: global
+                .registry_dir
+                .clone()
+                .or(configured_registry)
+                .unwrap_or_else(olaya::default_registry_dir),
+            store: global
+                .registry_store
+                .or(file.registry.store)
+                .unwrap_or(config::DEFAULT_REGISTRY_STORE),
+            url: clean(
+                global
+                    .registry_url
+                    .as_deref()
+                    .or(file.registry.url.as_deref()),
+            )
+            .unwrap_or(olaya::DEFAULT_REGISTRY_URL)
+            .to_owned(),
+            timeout_secs: global
+                .registry_timeout_secs
+                .or(file.registry.timeout_secs)
+                .unwrap_or(config::DEFAULT_REGISTRY_TIMEOUT_SECS),
+            allow_remote: !registry_explicit,
+        };
+        if registry.timeout_secs == 0 {
+            anyhow::bail!("[registry].timeout_secs must be at least 1");
+        }
+
+        Ok(Self {
+            config_path: loaded.path.clone(),
+            engine,
+            hub,
+            registry,
+        })
+    }
+
+    fn engine_builder(&self) -> Result<olaya::EngineBuilder> {
+        let device = olaya::olaya_candle::device::resolve(&self.engine.device)
+            .with_context(|| format!("resolving device {:?}", self.engine.device))?;
+        let mut builder = Engine::builder()
+            .builtin_families(BuiltinFamilies::all())
+            .device(device)
+            .dtype(parse_dtype(&self.engine.dtype)?)
+            .tf32(self.engine.tf32)
+            .max_loaded(self.engine.max_loaded);
+        if let Some(model) = &self.engine.default_model {
+            builder = builder.default_model(model.clone());
+        }
+        Ok(builder)
+    }
+}
+
+fn clean(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.trim().is_empty())
 }
 
 fn main() -> Result<()> {
@@ -162,46 +388,42 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let loaded = LoadedConfig::load(cli.config.as_deref())?;
-    let configured_registry = loaded
-        .file
-        .registry
-        .dir
-        .as_deref()
-        .map(|dir| config::resolve_path(&loaded.base, dir));
-    let registry_explicit = cli.registry_dir.is_some() || configured_registry.is_some();
-    let registry_dir = cli
-        .registry_dir
-        .or(configured_registry)
-        .unwrap_or_else(olaya::default_registry_dir);
-    let registry_store = cli.registry_store || loaded.file.registry.store.unwrap_or(false);
-    let allow_remote = !registry_explicit;
+    let loaded = LoadedConfig::load(cli.global.config.as_deref())?;
+    let settings = Settings::load(&loaded, &cli.global)?;
     match cli.command {
         #[cfg(feature = "serve")]
         Command::Serve(args) => {
+            // The registry/catalog and model store use blocking clients; build
+            // the engine before entering the Tokio runtime.
+            let engine = engine_from(&settings)?;
             let runtime = tokio::runtime::Runtime::new().context("creating the Tokio runtime")?;
-            runtime.block_on(serve(
-                args,
-                &loaded,
-                &registry_dir,
-                registry_store,
-                allow_remote,
-            ))
+            runtime.block_on(serve(args, &loaded, engine))
         }
-        Command::Ask(args) => ask(args, &loaded, &registry_dir, registry_store, allow_remote),
-        Command::Models(args) => models(args, &loaded, &registry_dir, registry_store, allow_remote),
-        Command::Doctor(args) => doctor(args, &loaded, &registry_dir, registry_store, allow_remote),
+        Command::Ask(args) => ask(args, &settings),
+        Command::Models(args) => models(args, &settings),
+        Command::Doctor(args) => doctor(args, &loaded, &settings),
     }
 }
 
 fn load_remote_catalog(
-    cache_dir: &std::path::Path,
+    settings: &Settings,
     refresh: bool,
 ) -> Result<(Vec<RepoManifest>, &'static str)> {
-    let registry = olaya::RemoteRegistry::from_env(cache_dir)?;
+    if settings.hub.offline {
+        anyhow::bail!(
+            "offline mode is enabled; provide a local registry directory or disable \
+             [hub].offline / OLAYA_OFFLINE"
+        );
+    }
+    let cache = settings.hub.cache_dir.join(olaya::CATALOG_CACHE_FILE);
+    let registry = olaya::RemoteRegistry::with_timeout(
+        &settings.registry.url,
+        Some(cache),
+        std::time::Duration::from_secs(settings.registry.timeout_secs),
+    )?;
     let (manifests, source) = registry.load(refresh).with_context(|| {
         format!(
-            "loading the remote catalog from {}; set OLAYA_REGISTRY_URL, \
+            "loading the remote catalog from {}; set [registry].url or OLAYA_REGISTRY_URL, \
              pass --registry-dir, or use --registry-store",
             registry.url()
         )
@@ -223,15 +445,24 @@ fn load_remote_catalog(
 /// its cache) is authoritative and seeds the local directory on first use, so
 /// later offline runs have a fallback.
 fn registry_manifests(
-    dir: &std::path::Path,
-    allow_remote: bool,
-    cache_dir: &std::path::Path,
+    settings: &Settings,
     refresh: bool,
 ) -> Result<(Vec<RepoManifest>, &'static str)> {
-    let remote_first = allow_remote && dir == olaya::hub::default_root().join("registry");
+    let dir = &settings.registry.dir;
+    let remote_first =
+        settings.registry.allow_remote && *dir == olaya::hub::default_root().join("registry");
     if remote_first {
         initialize_registry_seed(dir);
-        match load_remote_catalog(cache_dir, refresh) {
+        if settings.hub.offline {
+            let manifests = olaya::load_manifests(dir).with_context(|| {
+                format!(
+                    "offline mode is enabled and the local registry {} is unavailable",
+                    dir.display()
+                )
+            })?;
+            return Ok((manifests, "dir-offline"));
+        }
+        match load_remote_catalog(settings, refresh) {
             Ok((manifests, source)) => {
                 initialize_registry_fallback(dir, &manifests);
                 return Ok((manifests, source));
@@ -251,15 +482,29 @@ fn registry_manifests(
     }
     match olaya::load_manifests(dir) {
         Ok(manifests) => Ok((manifests, "dir")),
-        Err(error) if allow_remote && registry_is_empty(dir) => {
+        Err(error)
+            if settings.registry.allow_remote
+                && !settings.hub.offline
+                && registry_is_empty(dir) =>
+        {
             tracing::info!(
                 dir = %dir.display(),
                 %error,
                 "registry directory is unavailable; using the remote catalog"
             );
-            load_remote_catalog(cache_dir, refresh)
+            load_remote_catalog(settings, refresh)
         }
-        Err(error) => Err(error).with_context(|| format!("loading registry {}", dir.display())),
+        Err(error) => Err(error).with_context(|| {
+            if settings.hub.offline {
+                format!(
+                    "loading registry {} in offline mode; pass --registry-dir or \
+                     disable [hub].offline / OLAYA_OFFLINE",
+                    dir.display()
+                )
+            } else {
+                format!("loading registry {}", dir.display())
+            }
+        }),
     }
 }
 
@@ -329,159 +574,82 @@ fn registry_is_empty(dir: &std::path::Path) -> bool {
 
 fn with_registry(
     builder: olaya::EngineBuilder,
-    registry_store: bool,
-    registry_dir: &std::path::Path,
-    hub: HubConfig,
-    allow_remote: bool,
+    settings: &Settings,
 ) -> Result<olaya::EngineBuilder> {
-    let builder = builder.hub(hub.clone());
-    if registry_store {
-        let store = olaya::Hub::new(hub).store();
+    let builder = builder.hub(settings.hub.clone());
+    if settings.registry.store {
+        let store = olaya::Hub::new(settings.hub.clone()).store();
         Ok(builder.registry(Arc::new(olaya::StoreRegistry::new(store)))?)
     } else {
-        let cache_dir = hub.cache_dir.clone();
-        let (manifests, source) =
-            registry_manifests(registry_dir, allow_remote, &cache_dir, false)?;
+        let (manifests, source) = registry_manifests(settings, false)?;
         tracing::debug!(source, models = manifests.len(), "registry loaded");
         Ok(builder.manifests(manifests))
     }
 }
 
-fn hub_from(
-    loaded: &LoadedConfig,
-    models_dir: Option<&Path>,
-    cache_dir: Option<&Path>,
-    tmp_dir: Option<&Path>,
-    store_dir: Option<&Path>,
-) -> HubConfig {
-    let mut hub = HubConfig::default();
-    let file = &loaded.file.hub;
-    if let Some(path) = &file.models_dir {
-        hub.models_dir = config::resolve_path(&loaded.base, path);
-    }
-    if let Some(path) = &file.cache_dir {
-        hub.cache_dir = config::resolve_path(&loaded.base, path);
-    }
-    if let Some(path) = &file.tmp_dir {
-        hub.tmp_dir = config::resolve_path(&loaded.base, path);
-    }
-    if let Some(path) = &file.store_dir {
-        hub.store_dir = config::resolve_path(&loaded.base, path);
-    }
-    if let Some(offline) = file.offline {
-        hub.offline = offline;
-    }
-    if let Some(endpoint) = &file.hf_endpoint {
-        hub.hf_endpoint = Some(endpoint.clone());
-    }
-    if let Some(endpoint) = &file.modelscope_endpoint {
-        hub.modelscope_endpoint = Some(endpoint.clone());
-    }
-    if let Some(proxy) = &file.proxy {
-        hub.proxy = Some(proxy.clone());
-    }
-    hub.apply_env();
-    if let Some(path) = models_dir {
-        hub.models_dir = path.to_path_buf();
-    }
-    if let Some(path) = cache_dir {
-        hub.cache_dir = path.to_path_buf();
-    }
-    if let Some(path) = tmp_dir {
-        hub.tmp_dir = path.to_path_buf();
-    }
-    if let Some(path) = store_dir {
-        hub.store_dir = path.to_path_buf();
-    }
-    hub
-}
-
-fn engine_builder_from(
-    loaded: &LoadedConfig,
-    device: Option<&str>,
-    dtype: Option<&str>,
-    tf32: bool,
-) -> Result<olaya::EngineBuilder> {
-    let device_preference = device
-        .or(loaded.file.engine.device.as_deref())
-        .unwrap_or("auto");
-    let resolved_device = olaya::olaya_candle::device::resolve(device_preference)?;
-    tracing::debug!(
-        preference = device_preference,
-        device = ?resolved_device,
-        "engine device resolved"
-    );
-    let dtype = dtype
-        .or(loaded.file.engine.dtype.as_deref())
-        .unwrap_or("f32");
-    let mut builder = Engine::builder()
-        .builtin_families(BuiltinFamilies::all())
-        .device(resolved_device)
-        .dtype(parse_dtype(dtype)?)
-        .tf32(tf32 || loaded.file.engine.tf32.unwrap_or(false));
-    if let Some(model) = &loaded.file.engine.default_model {
-        builder = builder.default_model(model.clone());
-    }
-    Ok(builder)
-}
-
 #[cfg(feature = "serve")]
-fn engine_from(
-    loaded: &LoadedConfig,
-    host: &ServeArgs,
-    registry_dir: &Path,
-    registry_store: bool,
-    allow_remote: bool,
-) -> Result<Engine> {
-    let hub = hub_from(
-        loaded,
-        host.models_dir.as_deref(),
-        host.cache_dir.as_deref(),
-        host.tmp_dir.as_deref(),
-        host.store_dir.as_deref(),
-    );
-    let builder = engine_builder_from(
-        loaded,
-        host.device.as_deref(),
-        host.dtype.as_deref(),
-        host.tf32,
-    )?;
-    with_registry(builder, registry_store, registry_dir, hub, allow_remote)?
+fn engine_from(settings: &Settings) -> Result<Engine> {
+    with_registry(settings.engine_builder()?, settings)?
         .build()
         .context("building the engine")
 }
 
 #[cfg(feature = "serve")]
-async fn serve(
-    args: ServeArgs,
-    loaded: &LoadedConfig,
-    registry_dir: &Path,
-    registry_store: bool,
-    allow_remote: bool,
-) -> Result<()> {
-    let engine = engine_from(loaded, &args, registry_dir, registry_store, allow_remote)?;
-    let runtime: Arc<dyn DecisionRuntime> = Arc::new(engine);
+fn serve_config(args: &ServeArgs, loaded: &LoadedConfig) -> Result<olaya::serve::ServeConfig> {
+    let defaults = olaya::serve::ServeConfig::default();
     let file = &loaded.file.serve;
-    let host = args
-        .host
-        .or_else(|| file.host.clone())
-        .unwrap_or_else(|| "127.0.0.1".to_owned());
-    let port = args.port.or(file.port).unwrap_or(11435);
-    let api_key = args.api_key.or_else(|| file.api_key.clone());
-    let allow_unauthenticated =
-        args.allow_unauthenticated || file.allow_unauthenticated.unwrap_or(false);
-    let max_batch = args.max_batch.or(file.max_batch).unwrap_or(32);
-    let max_wait =
-        std::time::Duration::from_millis(args.batch_wait_ms.or(file.batch_wait_ms).unwrap_or(2));
     let config = olaya::serve::ServeConfig {
-        host: host.clone(),
-        port,
-        api_key,
-        allow_unauthenticated,
-        max_batch,
-        max_wait,
-        ..olaya::serve::ServeConfig::default()
+        host: clean(args.host.as_deref())
+            .or_else(|| clean(file.host.as_deref()))
+            .unwrap_or(&defaults.host)
+            .to_owned(),
+        port: args.port.or(file.port).unwrap_or(defaults.port),
+        api_key: clean(args.api_key.as_deref())
+            .or_else(|| clean(file.api_key.as_deref()))
+            .map(str::to_owned),
+        allow_unauthenticated: args
+            .allow_unauthenticated
+            .or(file.allow_unauthenticated)
+            .unwrap_or(defaults.allow_unauthenticated),
+        max_body_bytes: args
+            .max_body_bytes
+            .or(file.max_body_bytes)
+            .unwrap_or(defaults.max_body_bytes),
+        max_queue: args
+            .max_queue
+            .or(file.max_queue)
+            .unwrap_or(defaults.max_queue),
+        max_batch: args
+            .max_batch
+            .or(file.max_batch)
+            .unwrap_or(defaults.max_batch),
+        max_wait: args
+            .batch_wait_ms
+            .or(file.batch_wait_ms)
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(defaults.max_wait),
     };
+    if config.port == 0 {
+        anyhow::bail!("[serve].port must be between 1 and 65535");
+    }
+    if config.max_batch == 0 {
+        anyhow::bail!("[serve].max_batch must be at least 1");
+    }
+    if config.max_queue == 0 {
+        anyhow::bail!("[serve].max_queue must be at least 1");
+    }
+    if config.max_body_bytes == 0 {
+        anyhow::bail!("[serve].max_body_bytes must be at least 1");
+    }
+    Ok(config)
+}
+
+#[cfg(feature = "serve")]
+async fn serve(args: ServeArgs, loaded: &LoadedConfig, engine: Engine) -> Result<()> {
+    let runtime: Arc<dyn DecisionRuntime> = Arc::new(engine);
+    let config = serve_config(&args, loaded)?;
+    let host = config.host.clone();
+    let port = config.port;
     olaya::serve::serve(runtime, config).await.with_context(|| {
         format!(
             "serving on {host}:{port}; if the port is already in use, set [serve].port in the \
@@ -490,13 +658,7 @@ async fn serve(
     })
 }
 
-fn ask(
-    args: AskArgs,
-    loaded: &LoadedConfig,
-    registry_dir: &Path,
-    registry_store: bool,
-    allow_remote: bool,
-) -> Result<()> {
+fn ask(args: AskArgs, settings: &Settings) -> Result<()> {
     let raw_state = if args.state == "-" {
         std::io::read_to_string(std::io::stdin()).context("reading state from stdin")?
     } else {
@@ -516,18 +678,9 @@ fn ask(
 
     let model = args
         .model
-        .or_else(|| loaded.file.engine.default_model.clone())
-        .context(
-            "model is required; pass --model or set [engine].default_model in the config file",
-        )?;
-    let builder = engine_builder_from(
-        loaded,
-        args.device.as_deref(),
-        args.dtype.as_deref(),
-        args.tf32,
-    )?;
-    let hub = hub_from(loaded, None, None, None, None);
-    let engine = with_registry(builder, registry_store, registry_dir, hub, allow_remote)?
+        .or_else(|| settings.engine.default_model.clone())
+        .context("model is required; pass --model or set [engine].default_model")?;
+    let engine = with_registry(settings.engine_builder()?, settings)?
         .build()
         .context("building the engine")?;
     let answers = engine.ask_typed(&model, &state, &questions)?;
@@ -538,41 +691,22 @@ fn ask(
     Ok(())
 }
 
-fn catalog_engine(
-    loaded: &LoadedConfig,
-    registry_dir: &Path,
-    registry_store: bool,
-    models_dir: Option<&Path>,
-    store_dir: Option<&Path>,
-    allow_remote: bool,
-) -> Result<Engine> {
-    let hub = hub_from(loaded, models_dir, None, None, store_dir);
+fn catalog_engine(settings: &Settings) -> Result<Engine> {
     let builder = Engine::builder().builtin_families(BuiltinFamilies::all());
-    with_registry(builder, registry_store, registry_dir, hub, allow_remote)?
+    with_registry(builder, settings)?
         .build()
         .context("building the engine")
 }
 
-fn default_store(loaded: &LoadedConfig, store_dir: Option<&Path>) -> Arc<dyn olaya::ManifestStore> {
-    let hub = hub_from(loaded, None, None, None, store_dir);
-    olaya::Hub::new(hub).store()
+fn default_store(settings: &Settings) -> Arc<dyn olaya::ManifestStore> {
+    olaya::Hub::new(settings.hub.clone()).store()
 }
 
-fn models(
-    args: ModelsArgs,
-    loaded: &LoadedConfig,
-    registry_dir: &Path,
-    registry_store: bool,
-    allow_remote: bool,
-) -> Result<()> {
-    let ModelsArgs {
-        models_dir,
-        store_dir,
-        command,
-    } = args;
+fn models(args: ModelsArgs, settings: &Settings) -> Result<()> {
+    let ModelsArgs { command } = args;
     match command {
         ModelsCommand::Stored => {
-            let store = default_store(loaded, store_dir.as_deref());
+            let store = default_store(settings);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&store.list()?)
@@ -580,7 +714,7 @@ fn models(
             );
         }
         ModelsCommand::Manifest { model } => {
-            let store = default_store(loaded, store_dir.as_deref());
+            let store = default_store(settings);
             let stored = store.get(&model)?;
             let report = json!({
                 "model": model,
@@ -595,7 +729,7 @@ fn models(
             );
         }
         ModelsCommand::Verify { model } => {
-            let store = default_store(loaded, store_dir.as_deref());
+            let store = default_store(settings);
             let stored = store.get(&model)?;
             store.verify(&stored)?;
             println!(
@@ -604,14 +738,7 @@ fn models(
             );
         }
         ModelsCommand::List { all } => {
-            let engine = catalog_engine(
-                loaded,
-                registry_dir,
-                registry_store,
-                models_dir.as_deref(),
-                store_dir.as_deref(),
-                allow_remote,
-            )?;
+            let engine = catalog_engine(settings)?;
             let models = if all {
                 serde_json::to_value(engine.list_models()).context("serializing models")?
             } else {
@@ -635,14 +762,7 @@ fn models(
             );
         }
         ModelsCommand::Show { model } => {
-            let engine = catalog_engine(
-                loaded,
-                registry_dir,
-                registry_store,
-                models_dir.as_deref(),
-                store_dir.as_deref(),
-                allow_remote,
-            )?;
+            let engine = catalog_engine(settings)?;
             let manifest = engine
                 .resolve(&model)
                 .ok_or_else(|| anyhow::anyhow!("unknown model: {model}"))?;
@@ -652,14 +772,7 @@ fn models(
             );
         }
         ModelsCommand::Pull { model } => {
-            let engine = catalog_engine(
-                loaded,
-                registry_dir,
-                registry_store,
-                models_dir.as_deref(),
-                store_dir.as_deref(),
-                allow_remote,
-            )?;
+            let engine = catalog_engine(settings)?;
             let manifest = engine.pull(&model)?;
             println!(
                 "{}",
@@ -667,14 +780,7 @@ fn models(
             );
         }
         ModelsCommand::Add { manifest } => {
-            let engine = catalog_engine(
-                loaded,
-                registry_dir,
-                registry_store,
-                models_dir.as_deref(),
-                store_dir.as_deref(),
-                allow_remote,
-            )?;
+            let engine = catalog_engine(settings)?;
             let raw = std::fs::read_to_string(&manifest)
                 .with_context(|| format!("reading {}", manifest.display()))?;
             let manifest: RepoManifest = serde_json::from_str(&raw).context("parsing manifest")?;
@@ -682,26 +788,18 @@ fn models(
             println!("{}", json!({ "added": true }));
         }
         ModelsCommand::Remove { model } => {
-            let engine = catalog_engine(
-                loaded,
-                registry_dir,
-                registry_store,
-                models_dir.as_deref(),
-                store_dir.as_deref(),
-                allow_remote,
-            )?;
+            let engine = catalog_engine(settings)?;
             let removed = engine.delete(&model)?;
             println!("{}", json!({ "model": model, "removed": removed }));
         }
         ModelsCommand::Export { dir, force } => {
-            let dir = dir.unwrap_or_else(olaya::default_registry_dir);
-            let (manifests, source) = if registry_store {
-                let store = default_store(loaded, store_dir.as_deref());
+            let dir = dir.unwrap_or_else(|| settings.registry.dir.clone());
+            let (manifests, source) = if settings.registry.store {
+                let store = default_store(settings);
                 let registry = olaya::StoreRegistry::new(store);
                 (olaya::ManifestRegistry::manifests(&registry)?, "store")
             } else {
-                let hub = hub_from(loaded, None, None, None, None);
-                registry_manifests(registry_dir, allow_remote, &hub.cache_dir, true)?
+                registry_manifests(settings, true)?
             };
             let report = olaya::export_registry(&manifests, &dir, force)?;
             println!(
@@ -720,21 +818,9 @@ fn models(
     Ok(())
 }
 
-fn doctor(
-    args: DoctorArgs,
-    loaded: &LoadedConfig,
-    registry_dir: &Path,
-    registry_store: bool,
-    allow_remote: bool,
-) -> Result<()> {
-    let hub = hub_from(
-        loaded,
-        args.models_dir.as_deref(),
-        args.cache_dir.as_deref(),
-        args.tmp_dir.as_deref(),
-        args.store_dir.as_deref(),
-    );
-    let (registry_models, registry_source, registry_error) = if registry_store {
+fn doctor(_args: DoctorArgs, loaded: &LoadedConfig, settings: &Settings) -> Result<()> {
+    let hub = &settings.hub;
+    let (registry_models, registry_source, registry_error) = if settings.registry.store {
         let store = olaya::Hub::new(hub.clone()).store();
         let registry = olaya::StoreRegistry::new(store);
         match olaya::ManifestRegistry::manifests(&registry) {
@@ -742,35 +828,36 @@ fn doctor(
             Err(error) => (0, "store", Some(error.to_string())),
         }
     } else {
-        match registry_manifests(registry_dir, allow_remote, &hub.cache_dir, false) {
+        match registry_manifests(settings, false) {
             Ok((manifests, source)) => (manifests.len(), source, None),
             Err(error) => (0, "dir", Some(error.to_string())),
         }
     };
-    let store_dir_exists = hub.store_dir.exists();
     let stored_models = olaya::Store::open(&hub.store_dir)
         .list()
         .unwrap_or_default();
-    let device_preference = loaded.file.engine.device.as_deref().unwrap_or("auto");
-    let device = olaya::olaya_candle::device::resolve(device_preference)
+    let device = olaya::olaya_candle::device::resolve(&settings.engine.device)
         .map(|device| format!("{device:?}"))
         .unwrap_or_else(|error| format!("error: {error}"));
-    let report = json!({
-        "config_file": loaded.path.as_ref().map(|path| path.display().to_string()),
-        "device_preference": device_preference,
+    #[allow(unused_mut)]
+    let mut report = json!({
+        "config_file": settings.config_path.as_ref().map(|path| path.display().to_string()),
+        "config_base": loaded.base.display().to_string(),
+        "device_preference": settings.engine.device,
         "device": device,
         "compiled_accelerators": olaya::olaya_candle::device::compiled_accelerators(),
-        "dtype": loaded.file.engine.dtype.as_deref().unwrap_or("f32"),
-        "tf32": loaded.file.engine.tf32.unwrap_or(false),
-        "default_model": loaded.file.engine.default_model.as_deref(),
-        "registry_dir": registry_dir.display().to_string(),
+        "dtype": settings.engine.dtype,
+        "tf32": settings.engine.tf32,
+        "default_model": settings.engine.default_model,
+        "max_loaded": settings.engine.max_loaded,
+        "registry_dir": settings.registry.dir.display().to_string(),
+        "registry_store": settings.registry.store,
+        "registry_allow_remote": settings.registry.allow_remote,
         "registry_source": registry_source,
         "registry_models": registry_models,
         "registry_error": registry_error,
-        "registry_url": std::env::var(olaya::REGISTRY_URL_ENV)
-            .ok()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| olaya::DEFAULT_REGISTRY_URL.to_owned()),
+        "registry_url": settings.registry.url,
+        "registry_timeout_secs": settings.registry.timeout_secs,
         "registry_cache": hub
             .cache_dir
             .join(olaya::CATALOG_CACHE_FILE)
@@ -783,11 +870,31 @@ fn doctor(
         "models_dir_exists": hub.models_dir.exists(),
         "cache_dir_exists": hub.cache_dir.exists(),
         "tmp_dir_exists": hub.tmp_dir.exists(),
-        "store_dir_exists": store_dir_exists,
+        "store_dir_exists": hub.store_dir.exists(),
         "stored_models": stored_models,
         "offline": hub.offline,
         "hf_endpoint": hub.hf_endpoint,
+        "modelscope_endpoint": hub.modelscope_endpoint,
+        "proxy": hub.proxy,
     });
+    #[cfg(feature = "serve")]
+    {
+        let serve_args = match Cli::try_parse_from(["olaya", "serve"])?.command {
+            Command::Serve(args) => args,
+            _ => unreachable!("the command was parsed as serve"),
+        };
+        let serve = serve_config(&serve_args, loaded)?;
+        report["serve"] = json!({
+            "host": serve.host,
+            "port": serve.port,
+            "api_key_set": serve.api_key.is_some(),
+            "allow_unauthenticated": serve.allow_unauthenticated,
+            "max_batch": serve.max_batch,
+            "batch_wait_ms": serve.max_wait.as_millis() as u64,
+            "max_body_bytes": serve.max_body_bytes,
+            "max_queue": serve.max_queue,
+        });
+    }
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -804,6 +911,152 @@ fn parse_dtype(value: &str) -> Result<olaya::candle_core::DType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_global() -> GlobalArgs {
+        GlobalArgs {
+            config: None,
+            registry_dir: None,
+            registry_store: None,
+            registry_url: None,
+            registry_timeout_secs: None,
+            models_dir: None,
+            cache_dir: None,
+            tmp_dir: None,
+            store_dir: None,
+            hf_endpoint: None,
+            modelscope_endpoint: None,
+            proxy: None,
+            offline: None,
+            device: None,
+            dtype: None,
+            tf32: None,
+            default_model: None,
+            max_loaded: None,
+        }
+    }
+
+    #[test]
+    fn settings_resolve_cli_over_file_over_default() {
+        let loaded = LoadedConfig {
+            file: config::FileConfig {
+                engine: config::EngineConfig {
+                    device: Some("cpu".to_owned()),
+                    dtype: Some("f16".to_owned()),
+                    tf32: Some(true),
+                    default_model: Some("file-model".to_owned()),
+                    max_loaded: Some(2),
+                },
+                registry: config::RegistryConfig {
+                    store: Some(true),
+                    url: Some("https://file.example/catalog.json".to_owned()),
+                    timeout_secs: Some(5),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            path: None,
+            base: PathBuf::new(),
+        };
+        let mut global = empty_global();
+        global.device = Some("cuda".to_owned());
+        global.tf32 = Some(false);
+        global.max_loaded = Some(4);
+        global.registry_store = Some(false);
+        global.registry_url = Some("https://cli.example/catalog.json".to_owned());
+        global.registry_timeout_secs = Some(9);
+
+        let settings = Settings::load(&loaded, &global).expect("settings resolve");
+        assert_eq!(settings.engine.device, "cuda");
+        assert_eq!(settings.engine.dtype, "f16");
+        assert!(!settings.engine.tf32);
+        assert_eq!(settings.engine.default_model.as_deref(), Some("file-model"));
+        assert_eq!(settings.engine.max_loaded, 4);
+        assert!(!settings.registry.store);
+        assert_eq!(settings.registry.url, "https://cli.example/catalog.json");
+        assert_eq!(settings.registry.timeout_secs, 9);
+    }
+
+    #[test]
+    fn tri_state_flags_accept_explicit_false() {
+        let cli = Cli::try_parse_from([
+            "olaya",
+            "--tf32=false",
+            "--offline",
+            "--registry-store=false",
+            "doctor",
+        ])
+        .expect("cli parses");
+        assert_eq!(cli.global.tf32, Some(false));
+        assert_eq!(cli.global.offline, Some(true));
+        assert_eq!(cli.global.registry_store, Some(false));
+    }
+
+    #[test]
+    fn offline_mode_uses_the_local_registry_without_network() {
+        let dir = std::env::temp_dir().join(format!(
+            "olaya-cli-offline-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        initialize_registry_seed(&dir);
+        let settings = Settings {
+            config_path: None,
+            engine: EngineSettings {
+                device: config::DEFAULT_DEVICE.to_owned(),
+                dtype: config::DEFAULT_DTYPE.to_owned(),
+                tf32: config::DEFAULT_TF32,
+                default_model: Some(config::DEFAULT_MODEL.to_owned()),
+                max_loaded: config::DEFAULT_MAX_LOADED,
+            },
+            hub: HubConfig {
+                offline: true,
+                cache_dir: dir.join("cache"),
+                ..HubConfig::default()
+            },
+            registry: RegistrySettings {
+                dir: dir.clone(),
+                store: false,
+                url: "http://127.0.0.1:9/registry-catalog.json".to_owned(),
+                timeout_secs: 1,
+                allow_remote: true,
+            },
+        };
+        let (manifests, source) =
+            registry_manifests(&settings, false).expect("offline local registry loads");
+        assert_eq!(source, "dir");
+        assert_eq!(manifests.len(), registry_seed::MANIFESTS.len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn serve_flags_override_file_values_including_false() {
+        let loaded = LoadedConfig {
+            file: config::FileConfig {
+                serve: config::ServeConfigFile {
+                    port: Some(9000),
+                    allow_unauthenticated: Some(true),
+                    max_batch: Some(4),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            path: None,
+            base: PathBuf::new(),
+        };
+        let args = ServeArgs {
+            allow_unauthenticated: Some(false),
+            max_batch: Some(8),
+            ..ServeArgs::default()
+        };
+        let config = serve_config(&args, &loaded).expect("serve config resolves");
+        assert_eq!(config.port, 9000);
+        assert!(!config.allow_unauthenticated);
+        assert_eq!(config.max_batch, 8);
+    }
 
     #[test]
     fn seeds_a_missing_registry_from_embedded_manifests() {

@@ -15,6 +15,7 @@ pub struct ServeConfig {
     /// Allow binding a non-loopback address without an API key.
     pub allow_unauthenticated: bool,
     pub max_body_bytes: usize,
+    /// Maximum requests waiting in the batch channel before backpressure.
     pub max_queue: usize,
     /// Requests collected into one `predict_batch` call. 1 disables batching.
     pub max_batch: usize,
@@ -62,12 +63,13 @@ impl AppState {
         let batcher = (config.max_batch > 1)
             .then(|| {
                 tokio::runtime::Handle::try_current().ok().map(|_| {
-                    Batcher::spawn(
+                    Batcher::spawn_with_queue(
                         runtime.clone(),
                         BatchConfig {
                             max_batch: config.max_batch,
                             max_wait: config.max_wait,
                         },
+                        config.max_queue,
                         metrics.clone(),
                     )
                 })

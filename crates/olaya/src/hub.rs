@@ -73,8 +73,9 @@ pub fn default_root() -> PathBuf {
 
 impl HubConfig {
     /// Read `OLAYA_MODELS_DIR`, `OLAYA_CACHE_DIR`, `OLAYA_TMP_DIR`,
-    /// `HF_ENDPOINT`, `MODELSCOPE_ENDPOINT`, and `OLAYA_PROXY` over the
-    /// defaults. Flags and config files take precedence at the CLI layer.
+    /// `OLAYA_STORE_DIR`, `OLAYA_OFFLINE`, `HF_ENDPOINT`,
+    /// `MODELSCOPE_ENDPOINT`, and `OLAYA_PROXY` over the defaults. Flags and
+    /// config files take precedence at the CLI layer.
     pub fn from_env() -> Self {
         let mut config = Self::default();
         config.apply_env();
@@ -105,8 +106,8 @@ impl HubConfig {
         if let Some(proxy) = non_empty_env("OLAYA_PROXY") {
             self.proxy = Some(proxy.to_string_lossy().into_owned());
         }
-        if non_empty_env("OLAYA_OFFLINE").is_some() {
-            self.offline = true;
+        if let Some(offline) = env_bool("OLAYA_OFFLINE") {
+            self.offline = offline;
         }
     }
 
@@ -139,6 +140,26 @@ impl HubConfig {
 
 fn non_empty_env(key: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(key).filter(|value| !value.is_empty())
+}
+
+fn env_bool(key: &str) -> Option<bool> {
+    let value = non_empty_env(key)?;
+    let text = value.to_string_lossy();
+    match parse_bool(&text) {
+        Some(value) => Some(value),
+        None => {
+            tracing::warn!(variable = key, value = %text, "ignoring invalid boolean environment variable");
+            None
+        }
+    }
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 /// The download/registry hub.
@@ -1036,6 +1057,15 @@ mod tests {
 
     fn hub() -> Hub {
         Hub::new(HubConfig::default())
+    }
+
+    #[test]
+    fn boolean_environment_values_accept_common_spellings() {
+        assert_eq!(parse_bool("true"), Some(true));
+        assert_eq!(parse_bool("YES"), Some(true));
+        assert_eq!(parse_bool("0"), Some(false));
+        assert_eq!(parse_bool(" off "), Some(false));
+        assert_eq!(parse_bool("maybe"), None);
     }
 
     #[test]

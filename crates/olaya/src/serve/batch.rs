@@ -43,13 +43,25 @@ pub struct Batcher {
 }
 
 impl Batcher {
-    /// Spawn the worker. Must be called from inside a Tokio runtime.
+    /// Spawn the worker with the default queue capacity (8×`max_batch`).
+    /// Must be called from inside a Tokio runtime.
     pub fn spawn(
         runtime: Arc<dyn DecisionRuntime>,
         config: BatchConfig,
         metrics: RuntimeMetrics,
     ) -> Arc<Self> {
-        let (sender, receiver) = mpsc::channel(config.max_batch.max(1) * 8);
+        Self::spawn_with_queue(runtime, config, config.max_batch.max(1) * 8, metrics)
+    }
+
+    /// Spawn the worker with an explicit queue capacity. Must be called from
+    /// inside a Tokio runtime.
+    pub fn spawn_with_queue(
+        runtime: Arc<dyn DecisionRuntime>,
+        config: BatchConfig,
+        max_queue: usize,
+        metrics: RuntimeMetrics,
+    ) -> Arc<Self> {
+        let (sender, receiver) = mpsc::channel(max_queue.max(1));
         tokio::spawn(worker(runtime, receiver, config, metrics.clone()));
         Arc::new(Self { sender, metrics })
     }

@@ -32,6 +32,29 @@ Windows 上请在 **x64 Native Tools Command Prompt** 中运行 CUDA 安装命�
 | `olaya models stored/manifest/verify` | 查看 OCI 内容存储 |
 | `olaya doctor` | 输出路径、目录来源和诊断信息 |
 
+常用调用：
+
+```sh
+# 单次请求
+olaya ask --model laya --state "I was charged twice." --questions questions.json
+
+# 从 stdin 读取 state
+printf '%s' '{"message":"hello"}' | olaya ask --model laya --state - --questions questions.json
+
+# 拉取 router 及其全部目标
+olaya models pull laya:latest
+
+# 查看生效配置、存储和目录来源
+olaya doctor
+
+# 本地/离线 catalog
+olaya --registry-dir ./registry models list
+OLAYA_OFFLINE=true olaya models list
+
+# 使用 OCI content store 作为 catalog
+olaya --registry-store models list
+```
+
 ## 配置文件
 
 `serve`、`ask` 和模型命令共享一份 TOML 配置。CLI 依次查找 `./olaya.toml`、`./sys1.toml`、
@@ -44,24 +67,39 @@ feature 相关的模板。
 # "auto" 在构建包含 CUDA 且 GPU 可用时使用 CUDA，其次 Metal，否则回退 CPU。
 device = "auto"
 dtype = "f32"
+tf32 = false
 default_model = "laya:latest"
+max_loaded = 3
 
 [serve]
 host = "127.0.0.1"
 port = 11435
+# api_key = "..."
+allow_unauthenticated = false
 max_batch = 32
 batch_wait_ms = 2
+max_body_bytes = 8388608
+max_queue = 64
 
 [hub]
+# models_dir = "models"
+# cache_dir = "cache"
+# tmp_dir = "tmp"
+# store_dir = "store"
+# offline = false
 hf_endpoint = "https://hf-mirror.com"
 
 [registry]
 # dir = "./registry"
 # store = false
+# url = "https://github.com/hushink/olaya/releases/latest/download/registry-catalog.json"
+timeout_secs = 30
 ```
 
-CLI 参数覆盖环境变量，环境变量覆盖配置文件。`olaya doctor` 会输出当前加载的配置路径和生效的
-存储设置。
+CLI 参数覆盖环境变量，环境变量覆盖配置文件。布尔参数支持显式 false
+（`--tf32=false`、`OLAYA_OFFLINE=false`），可覆盖文件里的 `true`。`olaya doctor` 会输出当前加载的
+配置路径和每一项生效设置。完整说明见
+[docs/configuration.md](https://github.com/hushink/olaya/blob/HEAD/docs/configuration.md)。
 
 ## 提问
 
@@ -96,12 +134,15 @@ olaya serve --host 127.0.0.1 --port 11435
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--device` | `auto` | `auto`、`cpu`、`cuda` 或 `metal` |
-| `--dtype` | `f32` | CUDA/Metal 上的 `f32`、`f16` 或 `bf16` |
-| `--tf32` | 关闭 | 允许 CUDA 使用 TF32 GEMM |
+| `--device` | `auto` | `auto`、`cpu`、`cuda` 或 `metal`（全局） |
+| `--dtype` | `f32` | CUDA/Metal 上的 `f32`、`f16` 或 `bf16`（全局） |
+| `--tf32` | 关闭 | 允许 CUDA 使用 TF32 GEMM（全局） |
 | `--max-batch` | `32` | 单次批处理前向的请求数 |
 | `--batch-wait-ms` | `2` | 批处理等待窗口 |
+| `--max-body-bytes` | `8388608` | HTTP 请求体上限 |
+| `--max-queue` | `64` | 批处理队列上限 |
 | `--api-key` | `OLAYA_API_KEY` | 除 `/health` 外所有路由的 Bearer token |
+| `--allow-unauthenticated[=BOOL]` | `false` | 允许非 loopback 无鉴权绑定 |
 
 > [!WARNING]
 > 绑定非 loopback 地址时必须提供 `--api-key`，除非显式使用 `--allow-unauthenticated`。在可信网络之外
@@ -144,6 +185,8 @@ RUST_LOG=olaya=debug,olaya_candle=debug olaya serve
 
 ## 文档
 
+- [配置参考](https://github.com/hushink/olaya/blob/HEAD/docs/configuration.md)
+- [库 API 指南](https://github.com/hushink/olaya/blob/HEAD/docs/library.md)
 - [工作区 README](https://github.com/hushink/olaya/blob/HEAD/README.zh-CN.md)
 - [模型目录](https://github.com/hushink/olaya/blob/HEAD/registry/README.zh-CN.md)
 - [客户端 SDK](https://github.com/hushink/olaya/blob/HEAD/crates/olaya-sdk/README.zh-CN.md)

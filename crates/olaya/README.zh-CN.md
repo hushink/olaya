@@ -40,8 +40,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `load_manifests` 读取经过校验的 manifest 目录。可用 `olaya models export --dir registry` 生成，
 或传入由自定义 `ManifestRegistry` 加载的目录。
 
+显式选择设备和精度：
+
+```rust
+use olaya::{BuiltinFamilies, Engine, olaya_candle::device};
+use olaya::candle_core::DType;
+
+let device = device::resolve("auto")?;
+let engine = Engine::builder()
+    .builtin_families(BuiltinFamilies::all())
+    .registry_dir("registry")?
+    .device(device)
+    .dtype(DType::F16)
+    .tf32(true)
+    .max_loaded(2)
+    .default_model("laya:latest")
+    .build()?;
+```
+
+合批多个请求：
+
+```rust
+use olaya::{Questions, State};
+
+let requests = vec![
+    (State::text("Refund please"), Questions::new().noul("refund", "Is this a refund request?")),
+    (State::text("The app crashes"), Questions::new().noul("bug", "Is this a bug report?")),
+];
+let refs = requests.iter().map(|(s, q)| (s, q)).collect::<Vec<_>>();
+for result in engine.ask_batch("laya", &refs) {
+    println!("{:?}", result?);
+}
+```
+
+从 Hub 拉取并复用 content store：
+
+```rust
+use std::sync::Arc;
+use olaya::{Hub, HubConfig, Store, StoreRegistry};
+
+let config = HubConfig::default();
+let hub = Hub::new(config.clone());
+let manifest = hub.pull("laya:latest", None)?;
+
+let store = Arc::new(Store::open(&config.store_dir));
+let engine = Engine::builder()
+    .builtin_families(olaya::BuiltinFamilies::all())
+    .registry(Arc::new(StoreRegistry::new(store.clone())))?
+    .store(store)
+    .build()?;
+println!("loaded {} manifests", engine.manifests().len());
+```
+
 下载默认使用 `https://hf-mirror.com`。设置 `HF_ENDPOINT=https://huggingface.co` 或
-`HubConfig::hf_endpoint` 可改用 Hugging Face 官方端点。
+`HubConfig::hf_endpoint` 可改用 Hugging Face 官方端点。`HubConfig` 还提供 `offline`、`proxy`、
+`modelscope_endpoint` 和四个存储目录。
 
 ## Feature
 
@@ -55,6 +108,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 文档
 
+- [库 API 指南](https://github.com/hushink/olaya/blob/HEAD/docs/library.md)
+- [配置参考](https://github.com/hushink/olaya/blob/HEAD/docs/configuration.md)
 - [工作区 README](https://github.com/hushink/olaya/blob/HEAD/README.zh-CN.md)
 - [设计说明](https://github.com/hushink/olaya/blob/HEAD/docs/design.md)
 - [客户端 SDK](https://github.com/hushink/olaya/blob/HEAD/crates/olaya-sdk/README.zh-CN.md)

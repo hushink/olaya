@@ -1,13 +1,35 @@
 //! TOML configuration shared by `serve`, `ask`, and the model commands.
 //!
 //! Precedence is CLI flag > environment variable > file value > built-in
-//! default. Relative paths are resolved against the configuration file.
+//! default. File paths are resolved against the configuration file; CLI/env
+//! paths are resolved against the current working directory.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+
+/// Built-in engine defaults. Settings are resolved as
+/// CLI/env > file > these defaults.
+pub const DEFAULT_DEVICE: &str = "auto";
+pub const DEFAULT_DTYPE: &str = "f32";
+pub const DEFAULT_TF32: bool = false;
+pub const DEFAULT_MODEL: &str = "laya:latest";
+pub const DEFAULT_MAX_LOADED: usize = 3;
+
+/// Built-in server defaults, mirrored by `olaya::serve::ServeConfig::default`.
+pub const DEFAULT_HOST: &str = "127.0.0.1";
+pub const DEFAULT_PORT: u16 = 11435;
+pub const DEFAULT_ALLOW_UNAUTHENTICATED: bool = false;
+pub const DEFAULT_MAX_BATCH: usize = 32;
+pub const DEFAULT_BATCH_WAIT_MS: u64 = 2;
+pub const DEFAULT_MAX_BODY_BYTES: usize = olaya::MAX_BODY_BYTES;
+pub const DEFAULT_MAX_QUEUE: usize = 64;
+
+/// Built-in catalog defaults.
+pub const DEFAULT_REGISTRY_STORE: bool = false;
+pub const DEFAULT_REGISTRY_TIMEOUT_SECS: u64 = olaya::DEFAULT_REGISTRY_TIMEOUT_SECS;
 
 /// Template written to `$OLAYA_HOME/config.toml` on first use.
 ///
@@ -23,28 +45,59 @@ pub fn default_config_text() -> String {
 [engine]
 # `auto` uses CUDA when this build supports it and a GPU is usable, then Metal,
 # and falls back to CPU. Accelerators compiled into this binary: {accelerators}.
-device = "auto"
+device = "{device}"
 # Weight dtype on CUDA/Metal: f32, f16, or bf16 (CPU always computes in f32).
-dtype = "f32"
-tf32 = false
-default_model = "laya:latest"
+dtype = "{dtype}"
+tf32 = {tf32}
+default_model = "{default_model}"
+# Maximum number of models kept loaded at once.
+max_loaded = {max_loaded}
 
 [serve]
-host = "127.0.0.1"
-port = 11435
-max_batch = 32
-batch_wait_ms = 2
+host = "{host}"
+port = {port}
+# Set a bearer token to protect every route except /health.
+# api_key = "..."
+allow_unauthenticated = {allow_unauthenticated}
+max_batch = {max_batch}
+batch_wait_ms = {batch_wait_ms}
+max_body_bytes = {max_body_bytes}
+max_queue = {max_queue}
 
 [hub]
+# All paths default under $OLAYA_HOME; relative paths resolve against this file.
+# models_dir = "models"
+# cache_dir = "cache"
+# tmp_dir = "tmp"
+# store_dir = "store"
+# offline = false
 # Hugging Face downloads use the mirror by default.
 # hf_endpoint = "https://hf-mirror.com"
+# modelscope_endpoint = "https://www.modelscope.cn"
+# proxy = "http://127.0.0.1:7890"
 
 [registry]
 # Use a local manifest directory instead of the release catalog.
 # dir = "./registry"
 # store = false
+# url = "{registry_url}"
+timeout_secs = {registry_timeout_secs}
 "#,
-        accelerators = olaya::olaya_candle::device::compiled_accelerators()
+        accelerators = olaya::olaya_candle::device::compiled_accelerators(),
+        device = DEFAULT_DEVICE,
+        dtype = DEFAULT_DTYPE,
+        tf32 = DEFAULT_TF32,
+        default_model = DEFAULT_MODEL,
+        max_loaded = DEFAULT_MAX_LOADED,
+        host = DEFAULT_HOST,
+        port = DEFAULT_PORT,
+        allow_unauthenticated = DEFAULT_ALLOW_UNAUTHENTICATED,
+        max_batch = DEFAULT_MAX_BATCH,
+        batch_wait_ms = DEFAULT_BATCH_WAIT_MS,
+        max_body_bytes = DEFAULT_MAX_BODY_BYTES,
+        max_queue = DEFAULT_MAX_QUEUE,
+        registry_url = olaya::DEFAULT_REGISTRY_URL,
+        registry_timeout_secs = DEFAULT_REGISTRY_TIMEOUT_SECS
     )
 }
 
@@ -58,6 +111,7 @@ pub struct FileConfig {
     #[serde(default)]
     pub engine: EngineConfig,
     #[serde(default)]
+    #[cfg_attr(not(feature = "serve"), allow(dead_code))]
     pub serve: ServeConfigFile,
 }
 
@@ -66,6 +120,8 @@ pub struct FileConfig {
 pub struct RegistryConfig {
     pub dir: Option<PathBuf>,
     pub store: Option<bool>,
+    pub url: Option<String>,
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -88,10 +144,12 @@ pub struct EngineConfig {
     pub dtype: Option<String>,
     pub tf32: Option<bool>,
     pub default_model: Option<String>,
+    pub max_loaded: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(not(feature = "serve"), allow(dead_code))]
 pub struct ServeConfigFile {
     pub host: Option<String>,
     pub port: Option<u16>,
@@ -99,6 +157,8 @@ pub struct ServeConfigFile {
     pub allow_unauthenticated: Option<bool>,
     pub max_batch: Option<usize>,
     pub batch_wait_ms: Option<u64>,
+    pub max_body_bytes: Option<usize>,
+    pub max_queue: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -204,6 +264,9 @@ fn default_paths() -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "serve")]
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -213,6 +276,8 @@ mod tests {
 [registry]
 dir = "catalog"
 store = false
+url = "https://example.com/catalog.json"
+timeout_secs = 12
 
 [hub]
 models_dir = "models"
@@ -223,18 +288,24 @@ device = "cuda"
 dtype = "f16"
 tf32 = true
 default_model = "laya:latest"
+max_loaded = 2
 
 [serve]
 host = "0.0.0.0"
 port = 11436
 max_batch = 8
+max_body_bytes = 4096
+max_queue = 16
 "#,
         )
         .expect("config parses");
         assert_eq!(config.registry.dir, Some(PathBuf::from("catalog")));
+        assert_eq!(config.registry.timeout_secs, Some(12));
         assert_eq!(config.engine.device.as_deref(), Some("cuda"));
         assert_eq!(config.engine.dtype.as_deref(), Some("f16"));
+        assert_eq!(config.engine.max_loaded, Some(2));
         assert_eq!(config.serve.port, Some(11436));
+        assert_eq!(config.serve.max_queue, Some(16));
         assert_eq!(config.hub.offline, Some(true));
     }
 
@@ -252,10 +323,36 @@ max_batch = 8
     fn generated_template_is_parseable_and_feature_aware() {
         let text = default_config_text();
         let config: FileConfig = toml::from_str(&text).expect("generated template parses");
-        assert_eq!(config.engine.device.as_deref(), Some("auto"));
-        assert_eq!(config.engine.default_model.as_deref(), Some("laya:latest"));
+        assert_eq!(config.engine.device.as_deref(), Some(DEFAULT_DEVICE));
+        assert_eq!(config.engine.dtype.as_deref(), Some(DEFAULT_DTYPE));
+        assert_eq!(config.engine.tf32, Some(DEFAULT_TF32));
+        assert_eq!(config.engine.default_model.as_deref(), Some(DEFAULT_MODEL));
+        assert_eq!(config.engine.max_loaded, Some(DEFAULT_MAX_LOADED));
+        assert_eq!(config.serve.host.as_deref(), Some(DEFAULT_HOST));
+        assert_eq!(config.serve.port, Some(DEFAULT_PORT));
+        assert_eq!(config.serve.max_batch, Some(DEFAULT_MAX_BATCH));
+        assert_eq!(config.serve.batch_wait_ms, Some(DEFAULT_BATCH_WAIT_MS));
+        assert_eq!(config.serve.max_body_bytes, Some(DEFAULT_MAX_BODY_BYTES));
+        assert_eq!(config.serve.max_queue, Some(DEFAULT_MAX_QUEUE));
+        assert_eq!(
+            config.registry.timeout_secs,
+            Some(DEFAULT_REGISTRY_TIMEOUT_SECS)
+        );
         assert!(!text.contains("workspace"));
         assert!(!text.contains("RustRover"));
         assert!(text.contains(olaya::olaya_candle::device::compiled_accelerators()));
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn cli_defaults_match_serve_config_defaults() {
+        let serve = olaya::serve::ServeConfig::default();
+        assert_eq!(DEFAULT_HOST, serve.host);
+        assert_eq!(DEFAULT_PORT, serve.port);
+        assert_eq!(DEFAULT_ALLOW_UNAUTHENTICATED, serve.allow_unauthenticated);
+        assert_eq!(DEFAULT_MAX_BATCH, serve.max_batch);
+        assert_eq!(DEFAULT_MAX_BODY_BYTES, serve.max_body_bytes);
+        assert_eq!(DEFAULT_MAX_QUEUE, serve.max_queue);
+        assert_eq!(Duration::from_millis(DEFAULT_BATCH_WAIT_MS), serve.max_wait);
     }
 }

@@ -24,6 +24,8 @@ pub const DEFAULT_REGISTRY_URL: &str =
     "https://github.com/hushink/olaya/releases/latest/download/registry-catalog.json";
 /// Cache file name under the hub cache directory.
 pub const CATALOG_CACHE_FILE: &str = "registry-catalog.json";
+/// Default HTTP timeout for fetching the catalog bundle.
+pub const DEFAULT_REGISTRY_TIMEOUT_SECS: u64 = 30;
 
 /// Where a catalog load came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,11 +51,24 @@ pub struct RemoteRegistry {
 }
 
 impl RemoteRegistry {
-    /// Build a registry. `cache` is the catalog bundle path; pass `None` to
-    /// disable caching.
+    /// Build a registry with the default HTTP timeout. `cache` is the catalog
+    /// bundle path; pass `None` to disable caching.
     pub fn new(url: impl Into<String>, cache: Option<PathBuf>) -> Result<Self, RegistryError> {
+        Self::with_timeout(
+            url,
+            cache,
+            Duration::from_secs(DEFAULT_REGISTRY_TIMEOUT_SECS),
+        )
+    }
+
+    /// Build a registry with an explicit HTTP timeout.
+    pub fn with_timeout(
+        url: impl Into<String>,
+        cache: Option<PathBuf>,
+        timeout: Duration,
+    ) -> Result<Self, RegistryError> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(timeout)
             .user_agent(concat!("olaya/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| {

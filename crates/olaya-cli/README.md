@@ -33,6 +33,29 @@ to the full path of `cl.exe`; otherwise `nvcc` fails with `Cannot find compiler 
 | `olaya models stored/manifest/verify` | Inspect the OCI content store |
 | `olaya doctor` | Print paths, catalog source, and diagnostics |
 
+Common invocations:
+
+```sh
+# one request; questions.json contains the TypeSafe questions object
+olaya ask --model laya --state "I was charged twice." --questions questions.json
+
+# read the state from stdin
+printf '%s' '{"message":"hello"}' | olaya ask --model laya --state - --questions questions.json
+
+# pull a router and all of its targets
+olaya models pull laya:latest
+
+# inspect effective config, storage, and catalog source
+olaya doctor
+
+# local/offline catalog
+olaya --registry-dir ./registry models list
+OLAYA_OFFLINE=true olaya models list
+
+# use the OCI content store as the catalog
+olaya --registry-store models list
+```
+
 ## Configuration
 
 `serve`, `ask`, and the model commands share a TOML configuration. The CLI searches
@@ -46,24 +69,39 @@ a feature-aware template to `~/.olaya/config.toml` on first use.
 # and falls back to CPU.
 device = "auto"
 dtype = "f32"
+tf32 = false
 default_model = "laya:latest"
+max_loaded = 3
 
 [serve]
 host = "127.0.0.1"
 port = 11435
+# api_key = "..."
+allow_unauthenticated = false
 max_batch = 32
 batch_wait_ms = 2
+max_body_bytes = 8388608
+max_queue = 64
 
 [hub]
+# models_dir = "models"
+# cache_dir = "cache"
+# tmp_dir = "tmp"
+# store_dir = "store"
+# offline = false
 hf_endpoint = "https://hf-mirror.com"
 
 [registry]
 # dir = "./registry"
 # store = false
+# url = "https://github.com/hushink/olaya/releases/latest/download/registry-catalog.json"
+timeout_secs = 30
 ```
 
-CLI flags override environment variables, which override file values. `olaya doctor` prints the
-loaded config path and effective storage settings.
+CLI flags override environment variables, which override file values. Boolean flags accept explicit
+false (`--tf32=false`, `OLAYA_OFFLINE=false`) so a file value of `true` can be overridden.
+`olaya doctor` prints the loaded config path and every effective setting. See
+[docs/configuration.md](https://github.com/hushink/olaya/blob/HEAD/docs/configuration.md) for the full reference.
 
 ## Ask
 
@@ -99,12 +137,15 @@ management API under `/api/*`.
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `--device` | `auto` | `auto`, `cpu`, `cuda`, or `metal` |
-| `--dtype` | `f32` | `f32`, `f16`, or `bf16` on CUDA/Metal |
-| `--tf32` | off | Allow TF32 GEMMs on CUDA |
+| `--device` | `auto` | `auto`, `cpu`, `cuda`, or `metal` (global) |
+| `--dtype` | `f32` | `f32`, `f16`, or `bf16` on CUDA/Metal (global) |
+| `--tf32` | off | Allow TF32 GEMMs on CUDA (global) |
 | `--max-batch` | `32` | Requests per batched forward pass |
 | `--batch-wait-ms` | `2` | Collection window for a batch |
+| `--max-body-bytes` | `8388608` | Maximum HTTP request body |
+| `--max-queue` | `64` | Maximum queued requests |
 | `--api-key` | `OLAYA_API_KEY` | Bearer token for all routes except `/health` |
+| `--allow-unauthenticated[=BOOL]` | `false` | Allow a non-loopback bind without a key |
 
 > [!WARNING]
 > A non-loopback bind requires `--api-key` unless `--allow-unauthenticated` is set. Use a TLS
@@ -151,6 +192,8 @@ RUST_LOG=olaya=debug,olaya_candle=debug olaya serve
 
 ## Documentation
 
+- [Configuration reference](https://github.com/hushink/olaya/blob/HEAD/docs/configuration.md)
+- [Library API guide](https://github.com/hushink/olaya/blob/HEAD/docs/library.md)
 - [Workspace README](https://github.com/hushink/olaya#readme)
 - [Model registry](https://github.com/hushink/olaya/blob/HEAD/registry/README.md)
 - [Client SDK](https://github.com/hushink/olaya/blob/HEAD/crates/olaya-sdk/README.md)

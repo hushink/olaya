@@ -144,6 +144,8 @@ Useful server options:
 | `--tf32` | off | Allow TF32 tensor-core GEMMs on CUDA |
 | `--max-batch` | `32` | Requests collected into one forward pass |
 | `--batch-wait-ms` | `2` | Collection window for the first request |
+| `--max-body-bytes` | `8388608` | Maximum HTTP request body |
+| `--max-queue` | `64` | Maximum queued requests before backpressure |
 | `--api-key` | `OLAYA_API_KEY` | Bearer token for every route except `/health` |
 
 > [!WARNING]
@@ -164,24 +166,42 @@ CLI writes a feature-aware template to `~/.olaya/config.toml` on first use.
 # and falls back to CPU.
 device = "auto"
 dtype = "f32"
+tf32 = false
 default_model = "laya:latest"
+max_loaded = 3
 
 [serve]
 host = "127.0.0.1"
 port = 11435
+# api_key = "..."
+allow_unauthenticated = false
 max_batch = 32
 batch_wait_ms = 2
+max_body_bytes = 8388608
+max_queue = 64
 
 [hub]
+# models_dir = "models"
+# cache_dir = "cache"
+# tmp_dir = "tmp"
+# store_dir = "store"
+# offline = false
 hf_endpoint = "https://hf-mirror.com"
+# modelscope_endpoint = "https://www.modelscope.cn"
+# proxy = "http://127.0.0.1:7890"
 
 [registry]
 # dir = "./registry"
 # store = false
+# url = "https://github.com/hushink/olaya/releases/latest/download/registry-catalog.json"
+timeout_secs = 30
 ```
 
-Precedence is CLI flag > environment variable > file value > built-in default. Run
-`olaya doctor` to print the loaded configuration path and effective storage settings.
+Precedence is CLI flag > environment variable > file value > built-in default. Boolean CLI/env
+values accept explicit false (`--tf32=false`, `OLAYA_OFFLINE=false`) so they can override a file
+value of `true`. Run `olaya doctor` to print the loaded configuration path and every effective
+setting. See [docs/configuration.md](docs/configuration.md) for the full key and environment-variable
+reference, per-command scope, and examples.
 
 ### Use it as a Rust library
 
@@ -229,6 +249,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 The engine also supports `ask_typed` for the typed answer set, `ask_batch` and
 `ask_batch_responses` for multiple requests sharing a forward pass, and explicit `load`/`unload`.
+
+Choose the device and precision explicitly when embedding:
+
+```rust
+use olaya::{BuiltinFamilies, Engine, olaya_candle::device};
+use olaya::candle_core::DType;
+
+let device = device::resolve("auto")?; // cuda/metal when compiled and usable, else cpu
+let engine = Engine::builder()
+    .builtin_families(BuiltinFamilies::all())
+    .registry_dir("registry")?
+    .device(device)
+    .dtype(DType::F16)
+    .tf32(true)
+    .max_loaded(2)
+    .default_model("laya:latest")
+    .build()?;
+```
+
+Batch several requests into one forward pass:
+
+```rust
+use olaya::{Questions, State};
+
+let requests = vec![
+    (State::text("Refund please"), Questions::new().noul("refund", "Is this a refund request?")),
+    (State::text("The app crashes"), Questions::new().noul("bug", "Is this a bug report?")),
+];
+let refs = requests.iter().map(|(s, q)| (s, q)).collect::<Vec<_>>();
+for result in engine.ask_batch("laya", &refs) {
+    println!("{:?}", result?);
+}
+```
+
+Pull from the hub and reuse the content store:
+
+```rust
+use std::sync::Arc;
+use olaya::{Hub, HubConfig, Store, StoreRegistry};
+
+let config = HubConfig::default();
+let hub = Hub::new(config.clone());
+let manifest = hub.pull("laya:latest", None)?;
+
+let store = Arc::new(Store::open(&config.store_dir));
+let engine = Engine::builder()
+    .builtin_families(olaya::BuiltinFamilies::all())
+    .registry(Arc::new(StoreRegistry::new(store.clone())))?
+    .store(store)
+    .build()?;
+println!("engine has {} manifests", engine.manifests().len());
+```
+
+Embed the HTTP server with the `serve` feature:
+
+```rust
+use std::sync::Arc;
+use olaya::{DecisionRuntime, ServeConfig};
+
+let runtime: Arc<dyn DecisionRuntime> = Arc::new(engine);
+let config = ServeConfig {
+    host: "127.0.0.1".to_owned(),
+    port: 11435,
+    api_key: Some("secret".to_owned()),
+    ..ServeConfig::default()
+};
+olaya::serve::serve(runtime, config).await?;
+```
+
+[`docs/library.md`](docs/library.md) covers custom `ManifestRegistry` implementations, store
+verification, metrics, explicit load/unload, error types, and concurrency.
 
 ### Use the client SDK
 
@@ -333,8 +424,21 @@ store act as the catalog.
 | `HF_ENDPOINT` | `https://hf-mirror.com` | Hugging Face endpoint (`https://huggingface.co` for official) |
 | `MODELSCOPE_ENDPOINT` | ModelScope | ModelScope endpoint override |
 | `OLAYA_PROXY` | unset | Proxy for model downloads |
-| `OLAYA_OFFLINE` | unset | Disable network access |
+| `OLAYA_OFFLINE` | `false` | Disable network access |
+| `OLAYA_REGISTRY_STORE` | `false` | Use the content store as the catalog |
+| `OLAYA_REGISTRY_TIMEOUT_SECS` | `30` | Catalog HTTP timeout |
+| `OLAYA_DEVICE` | `auto` | Device preference |
+| `OLAYA_DTYPE` | `f32` | CUDA/Metal weight dtype |
+| `OLAYA_TF32` | `false` | TF32 on CUDA |
+| `OLAYA_DEFAULT_MODEL` | `laya:latest` | Fallback model |
+| `OLAYA_MAX_LOADED` | `3` | Models kept loaded |
+| `OLAYA_HOST` / `OLAYA_PORT` | `127.0.0.1` / `11435` | `serve` bind |
 | `OLAYA_API_KEY` | unset | Bearer token for `olaya serve` |
+| `OLAYA_ALLOW_UNAUTHENTICATED` | `false` | Allow non-loopback without a key |
+| `OLAYA_MAX_BATCH` / `OLAYA_BATCH_WAIT_MS` | `32` / `2` | Batched forward pass |
+| `OLAYA_MAX_BODY_BYTES` / `OLAYA_MAX_QUEUE` | `8388608` / `64` | HTTP body and queue limits |
+
+See [docs/configuration.md](docs/configuration.md) for the complete table.
 
 See [registry/README.md](registry/README.md) for the manifest layout and catalog format.
 
@@ -398,6 +502,8 @@ text format. Pass through the `x-typesafe-request-id` value when reporting an is
 ## Documentation
 
 - [CLI guide](crates/olaya-cli/README.md)
+- [Configuration reference](docs/configuration.md)
+- [Library API guide](docs/library.md)
 - [Client SDK guide](crates/olaya-sdk/README.md)
 - [Model registry and manifests](registry/README.md)
 - [Design notes (Chinese)](docs/design.md)

@@ -42,8 +42,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `load_manifests` reads a directory of validated manifests. Create one with
 `olaya models export --dir registry`, or pass a catalog loaded by your own `ManifestRegistry`.
 
+Choose the device and precision explicitly:
+
+```rust
+use olaya::{BuiltinFamilies, Engine, olaya_candle::device};
+use olaya::candle_core::DType;
+
+let device = device::resolve("auto")?;
+let engine = Engine::builder()
+    .builtin_families(BuiltinFamilies::all())
+    .registry_dir("registry")?
+    .device(device)
+    .dtype(DType::F16)
+    .tf32(true)
+    .max_loaded(2)
+    .default_model("laya:latest")
+    .build()?;
+```
+
+Batch requests sharing one forward pass:
+
+```rust
+use olaya::{Questions, State};
+
+let requests = vec![
+    (State::text("Refund please"), Questions::new().noul("refund", "Is this a refund request?")),
+    (State::text("The app crashes"), Questions::new().noul("bug", "Is this a bug report?")),
+];
+let refs = requests.iter().map(|(s, q)| (s, q)).collect::<Vec<_>>();
+for result in engine.ask_batch("laya", &refs) {
+    println!("{:?}", result?);
+}
+```
+
+Pull from the Hub and use the content store as a catalog:
+
+```rust
+use std::sync::Arc;
+use olaya::{Hub, HubConfig, Store, StoreRegistry};
+
+let config = HubConfig::default();
+let hub = Hub::new(config.clone());
+let manifest = hub.pull("laya:latest", None)?;
+
+let store = Arc::new(Store::open(&config.store_dir));
+let engine = Engine::builder()
+    .builtin_families(olaya::BuiltinFamilies::all())
+    .registry(Arc::new(StoreRegistry::new(store.clone())))?
+    .store(store)
+    .build()?;
+println!("loaded {} manifests", engine.manifests().len());
+```
+
 Downloads use `https://hf-mirror.com` by default. Set `HF_ENDPOINT=https://huggingface.co` or
-`HubConfig::hf_endpoint` to use the official Hugging Face endpoint.
+`HubConfig::hf_endpoint` to use the official Hugging Face endpoint. `HubConfig` also exposes
+`offline`, `proxy`, `modelscope_endpoint`, and the four storage directories.
 
 ## Features
 
@@ -57,6 +110,8 @@ Downloads use `https://hf-mirror.com` by default. Set `HF_ENDPOINT=https://huggi
 
 ## Documentation
 
+- [Library API guide](https://github.com/hushink/olaya/blob/HEAD/docs/library.md)
+- [Configuration reference](https://github.com/hushink/olaya/blob/HEAD/docs/configuration.md)
 - [Workspace README](https://github.com/hushink/olaya#readme)
 - [Design notes (Chinese)](https://github.com/hushink/olaya/blob/HEAD/docs/design.md)
 - [Client SDK](https://github.com/hushink/olaya/blob/HEAD/crates/olaya-sdk/README.md)
