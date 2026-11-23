@@ -1,7 +1,7 @@
 mod config;
 mod registry_seed;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -205,6 +205,7 @@ enum ModelsCommand {
 #[derive(Debug, Args)]
 struct DoctorArgs {}
 
+#[derive(Debug)]
 struct Settings {
     config_path: Option<PathBuf>,
     engine: EngineSettings,
@@ -212,6 +213,7 @@ struct Settings {
     registry: RegistrySettings,
 }
 
+#[derive(Debug)]
 struct EngineSettings {
     device: String,
     dtype: String,
@@ -220,6 +222,7 @@ struct EngineSettings {
     max_loaded: usize,
 }
 
+#[derive(Debug)]
 struct RegistrySettings {
     dir: PathBuf,
     store: bool,
@@ -349,6 +352,8 @@ impl Settings {
         if registry.timeout_secs == 0 {
             anyhow::bail!("[registry].timeout_secs must be at least 1");
         }
+        hub.validate_layout()?;
+        validate_disposable_layout(&hub, &registry, loaded.path.as_deref())?;
 
         Ok(Self {
             config_path: loaded.path.clone(),
@@ -376,6 +381,68 @@ impl Settings {
 
 fn clean(value: Option<&str>) -> Option<&str> {
     value.filter(|value| !value.trim().is_empty())
+}
+
+fn validate_disposable_layout(
+    hub: &HubConfig,
+    registry: &RegistrySettings,
+    config_path: Option<&Path>,
+) -> Result<()> {
+    let cache = config::normalized_absolute(&hub.cache_dir)?;
+    let tmp = config::normalized_absolute(&hub.tmp_dir)?;
+    let registry_dir = config::normalized_absolute(&registry.dir)?;
+    let models = config::normalized_absolute(&hub.models_dir)?;
+    let store = config::normalized_absolute(&hub.store_dir)?;
+    for (label, path) in [("cache_dir", &cache), ("tmp_dir", &tmp)] {
+        if overlaps(path, &registry_dir) {
+            anyhow::bail!(
+                "[registry].dir ({}) must not overlap [hub].{label} ({}); \
+                 deleting cache or staging would remove catalog files",
+                registry_dir.display(),
+                path.display()
+            );
+        }
+    }
+    if let Some(config_path) = config_path {
+        let config_path = config::normalized_absolute(config_path)?;
+        for (label, path) in [
+            ("hub.cache_dir", &cache),
+            ("hub.tmp_dir", &tmp),
+            ("hub.models_dir", &models),
+            ("hub.store_dir", &store),
+            ("registry.dir", &registry_dir),
+        ] {
+            if path_contains(path, &config_path) {
+                anyhow::bail!(
+                    "the configuration file ({}) must not live under [{label}] ({}); \
+                     deleting that managed directory would remove the configuration",
+                    config_path.display(),
+                    path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn overlaps(left: &Path, right: &Path) -> bool {
+    path_contains(left, right) || path_contains(right, left)
+}
+
+fn path_contains(parent: &Path, child: &Path) -> bool {
+    let parent = comparable_path(parent);
+    let child = comparable_path(child);
+    let parent = parent.trim_end_matches('/');
+    child == parent || child.starts_with(&format!("{parent}/"))
+}
+
+fn comparable_path(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        path.to_ascii_lowercase()
+    } else {
+        path
+    }
 }
 
 fn main() -> Result<()> {
@@ -974,6 +1041,55 @@ mod tests {
         assert!(!settings.registry.store);
         assert_eq!(settings.registry.url, "https://cli.example/catalog.json");
         assert_eq!(settings.registry.timeout_secs, 9);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn overlap_checks_ignore_windows_path_case() {
+        assert!(overlaps(
+            Path::new(r"C:\Data\models"),
+            Path::new(r"c:\data\models\cache")
+        ));
+        assert!(!overlaps(
+            Path::new(r"C:\Data\models"),
+            Path::new(r"C:\Data\model-cache")
+        ));
+    }
+
+    #[test]
+    fn rejects_disposable_directories_inside_models_or_store() {
+        let loaded = LoadedConfig {
+            file: config::FileConfig {
+                hub: config::HubConfigFile {
+                    models_dir: Some(PathBuf::from("data")),
+                    cache_dir: Some(PathBuf::from("data/cache")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            path: None,
+            base: PathBuf::new(),
+        };
+        let error = Settings::load(&loaded, &empty_global()).expect_err("overlap is rejected");
+        assert!(error.to_string().contains("must not overlap"));
+    }
+
+    #[test]
+    fn rejects_a_config_file_inside_cache_or_tmp() {
+        let loaded = LoadedConfig {
+            file: config::FileConfig {
+                hub: config::HubConfigFile {
+                    cache_dir: Some(PathBuf::from("config-cache")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            path: Some(PathBuf::from("config-cache/olaya.toml")),
+            base: PathBuf::new(),
+        };
+        let error =
+            Settings::load(&loaded, &empty_global()).expect_err("config overlap is rejected");
+        assert!(error.to_string().contains("configuration file"));
     }
 
     #[test]

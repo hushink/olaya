@@ -118,6 +118,17 @@ timeout_secs = 30
 | `modelscope_endpoint` | string | ModelScope 默认 | ModelScope 端点 |
 | `proxy` | string | 未设置 | HTTP/SOCKS 代理 |
 
+`cache_dir` 和 `tmp_dir` 是可丢弃目录：删除它们不会影响已经物化的模型、`store_dir` 中的 blob 或
+`config.toml`；下一次操作会按需重建。为了防止删除缓存误删权威数据，CLI 会拒绝以下布局：
+
+- `cache_dir` / `tmp_dir` 与 `models_dir` / `store_dir` 相同或互相包含
+- `cache_dir` / `tmp_dir` 与 `[registry].dir` 相同或互相包含
+- 配置文件位于 `cache_dir`、`tmp_dir`、`models_dir`、`store_dir` 或 `registry.dir` 之下
+
+`models_dir` 本身也是可重建的投影；权威内容在 `store_dir`。如果在一个正在进行的下载过程中删除
+`cache_dir`/`tmp_dir`，该次下载可能失败或失去 resume 信息，重新执行即可；已经完成的模型文件和
+store blob 不会被删除。
+
 ### registry
 
 | 键 | 类型 | 默认值 | 说明 |

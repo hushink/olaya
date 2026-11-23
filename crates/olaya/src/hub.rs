@@ -111,7 +111,33 @@ impl HubConfig {
         }
     }
 
+    /// Reject layouts where a disposable cache/staging directory overlaps a
+    /// model or blob directory. Deleting the former must never be able to
+    /// remove the latter.
+    pub fn validate_layout(&self) -> Result<(), RuntimeError> {
+        let models = normalized_absolute(&self.models_dir)?;
+        let store = normalized_absolute(&self.store_dir)?;
+        let cache = normalized_absolute(&self.cache_dir)?;
+        let tmp = normalized_absolute(&self.tmp_dir)?;
+        for (label, path) in [("models_dir", &models), ("store_dir", &store)] {
+            for (disposable, disposable_path) in [("cache_dir", &cache), ("tmp_dir", &tmp)] {
+                if paths_overlap(path, disposable_path) {
+                    return Err(RuntimeError::Storage {
+                        message: format!(
+                            "[hub].{disposable} ({}) must not overlap [hub].{label} ({}); \
+                             deleting cache or staging would remove downloaded data",
+                            disposable_path.display(),
+                            path.display()
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn ensure_dirs(&self) -> Result<(), RuntimeError> {
+        self.validate_layout()?;
         for (label, path) in [
             ("models", &self.models_dir),
             ("cache", &self.cache_dir),
@@ -140,6 +166,43 @@ impl HubConfig {
 
 fn non_empty_env(key: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(key).filter(|value| !value.is_empty())
+}
+
+fn normalized_absolute(path: &Path) -> Result<PathBuf, RuntimeError> {
+    let absolute = std::path::absolute(path).map_err(|error| RuntimeError::Storage {
+        message: format!("resolving {}: {error}", path.display()),
+    })?;
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    Ok(normalized)
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    path_contains(left, right) || path_contains(right, left)
+}
+
+fn path_contains(parent: &Path, child: &Path) -> bool {
+    let parent = comparable_path(parent);
+    let child = comparable_path(child);
+    let parent = parent.trim_end_matches('/');
+    child == parent || child.starts_with(&format!("{parent}/"))
+}
+
+fn comparable_path(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        path.to_ascii_lowercase()
+    } else {
+        path
+    }
 }
 
 fn env_bool(key: &str) -> Option<bool> {
@@ -219,6 +282,8 @@ impl Hub {
                 message: "offline mode is enabled".to_owned(),
             });
         }
+        // A missing cache/staging directory is not an error: recreate it.
+        self.config.ensure_dirs()?;
         let manifest = match hint {
             Some(manifest) => manifest.clone(),
             None => self.fetch_manifest(reference)?,
@@ -1057,6 +1122,19 @@ mod tests {
 
     fn hub() -> Hub {
         Hub::new(HubConfig::default())
+    }
+
+    #[test]
+    fn rejects_disposable_directories_overlapping_models_or_store() {
+        let mut config = HubConfig::default();
+        config.models_dir = PathBuf::from("data/models");
+        config.cache_dir = config.models_dir.join("cache");
+        assert!(config.validate_layout().is_err());
+
+        config.models_dir = PathBuf::from("data/models");
+        config.cache_dir = PathBuf::from("data/cache");
+        config.store_dir = PathBuf::from("data/cache/store");
+        assert!(config.validate_layout().is_err());
     }
 
     #[test]

@@ -167,6 +167,9 @@ manifest 规定的目录结构，再加载。`Store::materialize` 目前是 `std
 - `models pull` 会同时下载、导入 store，并保留 `models_dir` 的可读文件；如果 store 已有匹配内容，
   则直接从 store 物化，不重新下载。
 - `models_dir` 是可丢弃的投影：删除它不会丢模型，下一次 `load` 会从 store 重建；store 才是权威内容。
+- `cache_dir`/`tmp_dir` 同样可丢弃：删除只会丢 resume 状态、catalog 缓存或 manifest staging；
+  已下载模型和 blob 不受影响。`HubConfig::ensure_dirs`/`Hub::pull` 会按需重建它们，并拒绝与
+  `models_dir`/`store_dir` 重叠的布局。
 - 字节层面确实会有一份重复（blob + 物化文件）。若同盘部署且关心空间，可以在 `Store::materialize`
   中使用 hardlink/reflink（需要处理只读权限或写时复制），或者让加载器直接读取 blob；这两者都还没有
   实现，当前选择 `copy` 以保持物化文件可独立替换、避免改坏 blob。

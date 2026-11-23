@@ -416,8 +416,11 @@ The OCI store and the materialized model directory are intentional, non-conflict
 store holds immutable `sha256` blobs plus OCI manifests (deduplication, integrity, distributable
 catalog), while `models_dir` is the ordinary file tree that candle tokenizers and safetensors loaders
 need. `models_dir` is disposable: deleting it does not lose the model; the next load materializes it
-from the store. `Store::materialize` currently copies bytes, so the same content occupies both
-locations; hardlink/reflink or direct blob loaders are possible future space optimizations.
+from the store. `cache_dir` and `tmp_dir` are disposable too; deleting them must never affect the
+models, store blobs, or `config.toml`, and the CLI rejects configurations where a cache/staging
+directory overlaps an authoritative directory. `Store::materialize` currently copies bytes, so the
+same content occupies both locations; hardlink/reflink or direct blob loaders are possible future
+space optimizations.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

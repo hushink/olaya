@@ -70,6 +70,15 @@ fn pulls_a_local_repository_that_ships_a_manifest() {
             .is_file()
     );
 
+    // Cache and staging are disposable: removing them must not touch the
+    // materialized model or the authoritative store blobs.
+    std::fs::remove_dir_all(&config.cache_dir).expect("remove cache");
+    std::fs::remove_dir_all(&config.tmp_dir).expect("remove tmp");
+    assert!(config.model_dir("tiny").join("model.bin").is_file());
+    store
+        .verify(&stored)
+        .expect("store blobs survive cache removal");
+
     drop(source);
     std::fs::remove_dir_all(config.model_dir("tiny")).expect("remove materialized model");
     let restored = hub

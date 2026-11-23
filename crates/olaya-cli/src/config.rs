@@ -66,6 +66,7 @@ max_queue = {max_queue}
 
 [hub]
 # All paths default under $OLAYA_HOME; relative paths resolve against this file.
+# cache_dir/tmp_dir are disposable and must not overlap models_dir/store_dir.
 # models_dir = "models"
 # cache_dir = "cache"
 # tmp_dir = "tmp"
@@ -254,6 +255,23 @@ pub fn resolve_path(base: &Path, path: &Path) -> PathBuf {
     }
 }
 
+/// Make a path absolute and remove `.`/`..` components for overlap checks.
+pub fn normalized_absolute(path: &Path) -> Result<PathBuf> {
+    let absolute =
+        std::path::absolute(path).with_context(|| format!("resolving {}", path.display()))?;
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    Ok(normalized)
+}
+
 fn default_paths() -> Vec<PathBuf> {
     vec![
         PathBuf::from("olaya.toml"),
@@ -317,6 +335,14 @@ max_queue = 16
             .expect("current directory")
             .join("models");
         assert_eq!(resolve_path(base, &absolute), absolute);
+    }
+
+    #[test]
+    fn normalized_absolute_removes_parent_components() {
+        let normalized = normalized_absolute(Path::new("cache/../models")).expect("normalizes");
+        assert!(normalized.is_absolute());
+        assert!(normalized.ends_with("models"));
+        assert!(!normalized.to_string_lossy().contains("cache"));
     }
 
     #[test]
