@@ -412,6 +412,13 @@ olaya models export --dir ./registry
 If you distribute models through the content-addressed store instead, `--registry-store` makes the
 store act as the catalog.
 
+The OCI store and the materialized model directory are intentional, non-conflicting layers: the
+store holds immutable `sha256` blobs plus OCI manifests (deduplication, integrity, distributable
+catalog), while `models_dir` is the ordinary file tree that candle tokenizers and safetensors loaders
+need. `models_dir` is disposable: deleting it does not lose the model; the next load materializes it
+from the store. `Store::materialize` currently copies bytes, so the same content occupies both
+locations; hardlink/reflink or direct blob loaders are possible future space optimizations.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `OLAYA_HOME` | `~/.olaya` | Base directory for defaults |

@@ -146,6 +146,31 @@ let engine = Engine::builder()
 `Store::open` 的布局是 `blobs/sha256-*` + `manifests/<name>/`。`Store::verify` 会重新计算每个 blob
 的 sha256；CLI 的 `olaya models verify <model>` 是同一实现。
 
+## 内容寻址 store 与物化目录的关系
+
+`olaya` 有三层不同的“模型存在形式”，它们不是互相替代的关系：
+
+| 层 | 目录/位置 | 寻址方式 | 作用 |
+| --- | --- | --- | --- |
+| OCI content store | `[hub].store_dir` | `sha256:<hex>` blob + OCI manifest | 不可变内容、去重、完整性校验、可作为 catalog 分发 |
+| 物化模型目录 | `[hub].models_dir/<name>` | manifest 中的逻辑路径（`config.json`、`tokenizer/tokenizer.json`、`model.safetensors` 等） | candle/tokenizer 需要的普通文件树 |
+| 内存中的模型 | 进程内 LRU | canonical model name | 已加载的 `Family`/tensor，受 `max_loaded` 控制 |
+
+内容寻址解决的是“这份字节是什么、是否可信、能否复用”，物化解决的是“模型加载器如何按路径读到它”。
+当前 `LoadContext`、`HfTokenizer::from_file` 和 candle 的 safetensors 加载都接收文件系统路径，因此
+`Engine::build_family` 在 `models_dir` 缺少文件时会先调用 `Store::materialize`，把 blob 复制回
+manifest 规定的目录结构，再加载。`Store::materialize` 目前是 `std::fs::copy`。
+
+因此：
+
+- `--registry-store` 只是把 store 当作 **catalog**（manifest 来源），不会取消物化。
+- `models pull` 会同时下载、导入 store，并保留 `models_dir` 的可读文件；如果 store 已有匹配内容，
+  则直接从 store 物化，不重新下载。
+- `models_dir` 是可丢弃的投影：删除它不会丢模型，下一次 `load` 会从 store 重建；store 才是权威内容。
+- 字节层面确实会有一份重复（blob + 物化文件）。若同盘部署且关心空间，可以在 `Store::materialize`
+  中使用 hardlink/reflink（需要处理只读权限或写时复制），或者让加载器直接读取 blob；这两者都还没有
+  实现，当前选择 `copy` 以保持物化文件可独立替换、避免改坏 blob。
+
 ## 自定义 catalog
 
 `ManifestRegistry` 只要求：

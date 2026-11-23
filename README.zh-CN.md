@@ -400,6 +400,12 @@ olaya models export --dir ./registry
 
 如果模型通过内容寻址 store 分发，`--registry-store` 可以直接把 store 当作目录。
 
+OCI store 与物化模型目录是互补而非冲突的两层：store 保存不可变的 `sha256` blob 和 OCI manifest
+（去重、完整性、可分发的 catalog）；`models_dir` 是 candle tokenizer 和 safetensors loader 需要的
+普通文件树。`models_dir` 可以随时删除，下一次加载会从 store 重新物化，store 才是权威内容。
+当前 `Store::materialize` 使用 `copy`，因此同一内容会同时占用 store 和物化目录；hardlink/reflink
+或直接读取 blob 是未来的空间优化方向。
+
 | 环境变量 | 默认值 | 用途 |
 | --- | --- | --- |
 | `OLAYA_HOME` | `~/.olaya` | 默认路径的根目录 |
