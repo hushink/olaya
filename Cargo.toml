@@ -37,7 +37,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 
 [workspace.package]
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 rust-version = "1.92"
 authors = ["weilanzhuan@gmail.com"]
