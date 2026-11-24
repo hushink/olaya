@@ -49,7 +49,7 @@ pub mod serve;
 
 pub use catalog::Catalog;
 pub use engine::{Engine, EngineBuilder, ModelHandle};
-pub use export::{ExportReport, export_registry};
+pub use export::{ExportReport, RemovalReport, export_registry, remove_registry_manifest};
 pub use families::BuiltinFamilies;
 pub use hub::{DEFAULT_HF_ENDPOINT, Hub, HubConfig};
 pub use registry::{FsRegistry, StoreRegistry, default_registry_dir, load_manifests};
@@ -59,7 +59,7 @@ pub use remote::{
     REGISTRY_URL_ENV, RemoteRegistry,
 };
 pub use router::route_state;
-pub use store::Store;
+pub use store::{Store, StoreRemoval};
 
 pub use olaya_core::{ManifestRegistry, ManifestStore, RegistryError, StoreError, StoredModel};
 

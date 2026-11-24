@@ -92,6 +92,72 @@ fn pulls_a_local_repository_that_ships_a_manifest() {
 }
 
 #[test]
+fn refuses_to_replace_an_existing_catalog_model_from_an_uncatalogued_reference() {
+    let existing = RepoManifest {
+        schema_version: 1,
+        name: "tiny".to_owned(),
+        aliases: Vec::new(),
+        family: "tiny".to_owned(),
+        engine: "candle".to_owned(),
+        arch: "custom".to_owned(),
+        format: "safetensors".to_owned(),
+        layout: "tiny-v1".to_owned(),
+        subfolder: None,
+        files: vec![ManifestFile {
+            path: "model.bin".to_owned(),
+            role: FileRole::Weights,
+            sha256: None,
+            size: Some(4),
+            url: None,
+        }],
+        calibration_mode: CalibrationMode::Raw,
+        capabilities: Capabilities::classification(),
+        router: None,
+        license: "Apache-2.0".to_owned(),
+        description: "trusted".to_owned(),
+        release_date: None,
+        source: None,
+        revision: None,
+    };
+
+    let source = tempdir().expect("source tempdir");
+    std::fs::write(source.path().join("model.bin"), b"evil").expect("write weight");
+    let replacement = RepoManifest {
+        description: "untrusted".to_owned(),
+        files: vec![ManifestFile {
+            path: "model.bin".to_owned(),
+            role: FileRole::Weights,
+            sha256: None,
+            size: Some(4),
+            url: None,
+        }],
+        ..existing.clone()
+    };
+    std::fs::write(
+        source.path().join("olaya.manifest.json"),
+        serde_json::to_vec_pretty(&replacement).expect("manifest serializes"),
+    )
+    .expect("write manifest");
+
+    let root = tempdir().expect("model root");
+    let config = HubConfig {
+        models_dir: root.path().join("models"),
+        cache_dir: root.path().join("cache"),
+        tmp_dir: root.path().join("tmp"),
+        store_dir: root.path().join("store"),
+        ..HubConfig::default()
+    };
+    let engine = olaya::Engine::builder()
+        .manifests(vec![existing])
+        .hub(config)
+        .build()
+        .expect("engine");
+    let reference = format!("local:{}", source.path().display());
+    let error = engine.pull(&reference).expect_err("clobber is refused");
+    assert!(error.to_string().contains("refusing to replace"), "{error}");
+}
+
+#[test]
 fn a_corrupt_download_is_removed_for_the_next_pull() {
     let source = tempdir().expect("source tempdir");
     std::fs::write(source.path().join("model.bin"), b"test").expect("write weight");
@@ -273,6 +339,7 @@ fn pulls_files_that_declare_an_absolute_url() {
         cache_dir: root.path().join("cache"),
         tmp_dir: root.path().join("tmp"),
         store_dir: root.path().join("store"),
+        allow_private_network: true,
         ..HubConfig::default()
     };
     let hub = Hub::new(config.clone());

@@ -221,6 +221,131 @@ fn the_engine_builder_accepts_a_custom_store() {
 }
 
 #[test]
+fn refuses_to_overwrite_a_store_slot_owned_by_another_model() {
+    let first_dir = tempdir().expect("first dir");
+    std::fs::write(first_dir.path().join("model.bin"), b"first").expect("first");
+    let first = manifest(
+        "a_b",
+        &[],
+        None,
+        vec![file("model.bin", FileRole::Weights, 5)],
+    );
+
+    let second_dir = tempdir().expect("second dir");
+    std::fs::write(second_dir.path().join("model.bin"), b"second").expect("second");
+    let second = manifest(
+        "a b",
+        &[],
+        None,
+        vec![file("model.bin", FileRole::Weights, 6)],
+    );
+
+    let root = tempdir().expect("store dir");
+    let store = Store::open(root.path().join("store"));
+    store.put(&first, first_dir.path()).expect("first import");
+    assert!(matches!(
+        store.put(&second, second_dir.path()),
+        Err(StoreError::Reference(_))
+    ));
+    let stored = store.get("a_b").expect("first survives");
+    assert_eq!(stored.config.name, "a_b");
+}
+
+#[test]
+fn remove_deletes_manifests_and_collects_only_unreferenced_blobs() {
+    let first_dir = tempdir().expect("first dir");
+    std::fs::write(first_dir.path().join("model.bin"), b"shared").expect("shared weights");
+    std::fs::write(first_dir.path().join("tokenizer.json"), b"{}").expect("tokenizer");
+    let first = manifest(
+        "first",
+        &["first-latest"],
+        None,
+        vec![
+            file("model.bin", FileRole::Weights, 6),
+            file("tokenizer.json", FileRole::Tokenizer, 2),
+        ],
+    );
+
+    let second_dir = tempdir().expect("second dir");
+    std::fs::write(second_dir.path().join("model.bin"), b"shared").expect("shared weights");
+    let second = manifest(
+        "second",
+        &[],
+        None,
+        vec![file("model.bin", FileRole::Weights, 6)],
+    );
+
+    let root = tempdir().expect("store dir");
+    let store = Store::open(root.path().join("store"));
+    store.put(&first, first_dir.path()).expect("first import");
+    let second_stored = store
+        .put(&second, second_dir.path())
+        .expect("second import");
+
+    let removal = store.remove("first-latest").expect("remove by alias");
+    assert_eq!(removal.model, "first");
+    // The canonical and alias directories each hold a named and a pinned manifest.
+    assert_eq!(removal.manifests, 4);
+    assert!(!removal.gc_skipped);
+    // First model's config and tokenizer blobs; the shared weights stay.
+    assert_eq!(removal.blobs, 2);
+    assert!(removal.freed_bytes > 0);
+
+    assert!(store.manifest("first").is_err());
+    assert!(store.manifest("first-latest").is_err());
+    let remaining = store.manifest("second").expect("second remains");
+    assert_eq!(remaining.digest, second_stored.digest);
+    store.verify(&remaining).expect("remaining model verifies");
+    let shared_blob = store
+        .blob_path(&remaining.manifest.layers[0].digest)
+        .expect("blob path");
+    assert!(shared_blob.is_file(), "shared blob must survive");
+
+    let removal = store.remove("second").expect("remove second");
+    assert_eq!(removal.manifests, 2);
+    assert_eq!(removal.blobs, 2);
+    assert!(store.list().expect("list").is_empty());
+    assert!(!shared_blob.exists(), "last reference was removed");
+
+    assert!(matches!(
+        store.remove("missing"),
+        Err(StoreError::Reference(_))
+    ));
+}
+
+#[test]
+fn remove_skips_blob_gc_when_a_manifest_is_unreadable() {
+    let repo_dir = tempdir().expect("repo dir");
+    std::fs::write(repo_dir.path().join("model.bin"), b"weights").expect("weights");
+    let repo = manifest(
+        "tiny",
+        &[],
+        None,
+        vec![file("model.bin", FileRole::Weights, 7)],
+    );
+
+    let root = tempdir().expect("store dir");
+    let store = Store::open(root.path().join("store"));
+    let stored = store.put(&repo, repo_dir.path()).expect("import");
+
+    // Simulate a damaged store entry that still references a blob. GC must
+    // refuse to delete anything it cannot prove is unreferenced.
+    let other = root.path().join("store/v1/library/other/manifests");
+    std::fs::create_dir_all(&other).expect("other manifest dir");
+    std::fs::write(other.join("other.json"), b"{not json").expect("broken manifest");
+
+    let removal = store.remove("tiny").expect("remove tiny");
+    assert!(removal.gc_skipped);
+    assert_eq!(removal.blobs, 0);
+    assert!(
+        store
+            .blob_path(&stored.manifest.layers[0].digest)
+            .expect("blob")
+            .is_file()
+    );
+}
+
+#[test]
 fn works_as_a_trait_object() {
     let repo_dir = tempdir().expect("repo dir");
     std::fs::write(repo_dir.path().join("model.bin"), b"weights").expect("weight");

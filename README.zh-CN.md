@@ -141,7 +141,12 @@ curl http://127.0.0.1:11435/v1/systemone \
 | `--batch-wait-ms` | `2` | 首个请求的等待窗口 |
 | `--max-body-bytes` | `8388608` | HTTP 请求体上限 |
 | `--max-queue` | `64` | 批处理队列上限 |
+| `--request-timeout-secs` | `600` | 单请求总超时；`0` 关闭 |
+| `--max-operations` | `4` | pull/load 并发上限 |
 | `--api-key` | `OLAYA_API_KEY` | 除 `/health` 外所有路由的 Bearer token |
+| `--allow-unauthenticated` | 关闭 | 允许非 loopback 绑定且不设 key |
+| `--cors-origin` | 无 | 允许调用 API 的浏览器 Origin（可重复） |
+| `--allowed-host` | loopback 主机名 | 额外接受的 `Host` 头（防 DNS rebinding） |
 
 > [!WARNING]
 > 服务默认只绑定 loopback。绑定非 loopback 地址时必须提供 `--api-key`（或显式使用
@@ -172,6 +177,12 @@ max_batch = 32
 batch_wait_ms = 2
 max_body_bytes = 8388608
 max_queue = 64
+request_timeout_secs = 600
+max_operations = 4
+# 允许调用 API 的浏览器 Origin；留空关闭 CORS。
+# cors_origins = ["https://app.example.com"]
+# 额外接受的 Host 头。
+# allowed_hosts = ["olaya.internal"]
 
 [hub]
 # models_dir = "models"
@@ -182,6 +193,11 @@ max_queue = 64
 hf_endpoint = "https://hf-mirror.com"
 # modelscope_endpoint = "https://www.modelscope.cn"
 # proxy = "http://127.0.0.1:7890"
+# no_proxy = "localhost,127.0.0.1"
+# allow_private_network = false
+download_timeout_secs = 60
+connect_timeout_secs = 15
+download_retries = 5
 
 [registry]
 # dir = "./registry"
@@ -407,6 +423,10 @@ OCI store 与物化模型目录是互补而非冲突的两层：store 保存不�
 目录与权威目录重叠的配置。当前 `Store::materialize` 使用 `copy`，因此同一内容会同时占用 store
 和物化目录；hardlink/reflink 或直接读取 blob 是未来的空间优化方向。
 
+需要真正回收磁盘时，使用 `olaya models remove <name> --purge` 或库层的 `Store::remove`：它们会
+删除物化目录、该模型的 store/registry manifest，以及不再被任何剩余模型引用的 blob。
+`DELETE /api/delete` 的语义则不同：只把模型从运行中进程的内存 catalog 移除，保留所有文件。
+
 | 环境变量 | 默认值 | 用途 |
 | --- | --- | --- |
 | `OLAYA_HOME` | `~/.olaya` | 默认路径的根目录 |
@@ -453,7 +473,7 @@ manifest 布局与 catalog 格式见 [registry/README.zh-CN.md](registry/README.
 | `POST` | `/api/load` | 加载模型 |
 | `POST` | `/api/unload` | 卸载模型 |
 | `POST` | `/api/pull` | 拉取模型 |
-| `DELETE` | `/api/delete` | 删除模型 |
+| `DELETE` | `/api/delete` | 从运行中服务的内存目录移除模型（保留文件和 blob；回收磁盘请用 `olaya models remove --purge`） |
 
 `POST /v1/systemone` 接受 JSON 或用于图片的 `multipart/form-data`。图片与 box 请求需要
 `TypeSafe-Danger-Zone-Images: true`；长上下文请求可发送

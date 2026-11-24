@@ -14,6 +14,8 @@ use olaya_core::{ManifestRegistry, ManifestStore, RegistryError, RepoManifest};
 
 /// Environment variable that overrides the registry directory.
 pub const REGISTRY_ENV: &str = "OLAYA_REGISTRY_DIR";
+/// Maximum size of a single manifest file.
+const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
 
 /// The default filesystem registry.
 ///
@@ -142,6 +144,9 @@ fn walk(dir: &Path, out: &mut Vec<RepoManifest>) -> Result<(), RegistryError> {
             path: path.clone(),
             source,
         })?;
+        if file_type.is_symlink() {
+            continue;
+        }
         if file_type.is_dir() {
             walk(&path, out)?;
         } else if path
@@ -161,6 +166,16 @@ fn read_manifest(path: &Path) -> Result<RepoManifest, RegistryError> {
         .and_then(|stem| stem.to_str())
         .unwrap_or_default()
         .to_owned();
+    let metadata = std::fs::metadata(path).map_err(|source| RegistryError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if metadata.len() > MAX_MANIFEST_BYTES {
+        return Err(RegistryError::Unavailable(format!(
+            "manifest {} is larger than the {MAX_MANIFEST_BYTES}-byte limit",
+            path.display()
+        )));
+    }
     let bytes = std::fs::read(path).map_err(|source| RegistryError::Io {
         path: path.to_path_buf(),
         source,

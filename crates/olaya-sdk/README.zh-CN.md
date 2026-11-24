@@ -163,7 +163,9 @@ match client.system_one(state, questions).await {
 ## 重试与超时
 
 默认值与官方 SDK 一致：重试 2 次，500 ms 到 5 s 的指数退避和 25% 抖动，重试 408/429/5xx，支持
-`Retry-After`，每次调用总预算 30 s。每个请求默认超时 10 s。
+`Retry-After`，每次调用总预算 30 s。每个请求默认超时 10 s。服务器给出的 `Retry-After` 会被限制在
+60 秒（`MAX_RETRY_AFTER`），避免恶意服务器无限拖延客户端。响应体上限为 16 MiB
+（`MAX_RESPONSE_BYTES`），超过时返回 `Error::ResponseTooLarge`。
 
 ```rust
 use std::time::Duration;

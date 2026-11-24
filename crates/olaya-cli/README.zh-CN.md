@@ -28,7 +28,7 @@ Windows 上请在 **x64 Native Tools Command Prompt** 中运行 CUDA 安装命�
 | `olaya serve` | 启动 HTTP 服务 |
 | `olaya models list/show/pull` | 查看或下载模型 |
 | `olaya models export` | 将目录物化到 registry 目录 |
-| `olaya models add/remove` | 编辑运行时目录 |
+| `olaya models add/remove` | 在文件系统 registry 中写入或删除 manifest；`remove --purge` 同时删除本地权重和 blob |
 | `olaya models stored/manifest/verify` | 查看 OCI 内容存储 |
 | `olaya doctor` | 输出路径、目录来源和诊断信息 |
 
@@ -80,6 +80,12 @@ max_batch = 32
 batch_wait_ms = 2
 max_body_bytes = 8388608
 max_queue = 64
+request_timeout_secs = 600
+max_operations = 4
+# 允许调用 API 的浏览器 Origin；留空关闭 CORS。
+# cors_origins = ["https://app.example.com"]
+# 额外接受的 Host 头。
+# allowed_hosts = ["olaya.internal"]
 
 [hub]
 # models_dir = "models"
@@ -88,6 +94,12 @@ max_queue = 64
 # store_dir = "store"
 # offline = false
 hf_endpoint = "https://hf-mirror.com"
+# proxy = "http://127.0.0.1:7890"
+# no_proxy = "localhost,127.0.0.1"
+# allow_private_network = false
+download_timeout_secs = 60
+connect_timeout_secs = 15
+download_retries = 5
 
 [registry]
 # dir = "./registry"
@@ -141,6 +153,11 @@ olaya serve --host 127.0.0.1 --port 11435
 | `--batch-wait-ms` | `2` | 批处理等待窗口 |
 | `--max-body-bytes` | `8388608` | HTTP 请求体上限 |
 | `--max-queue` | `64` | 批处理队列上限 |
+| `--request-timeout-secs` | `600` | 单个请求（含读取 body）的超时秒数；`0` 关闭 |
+| `--max-operations` | `4` | 同时执行的 `/api/pull` 与 `/api/load` 数量上限 |
+| `--cors-origin` | 无 | 允许的浏览器 Origin；可重复或逗号分隔；留空关闭 CORS |
+| `--allowed-host` | 无 | 服务端额外接受的 `Host` 值 |
+| `--allow-private-network[=BOOL]` | `false` | 允许 manifest 和下载访问 loopback/内网地址（全局） |
 | `--api-key` | `OLAYA_API_KEY` | 除 `/health` 外所有路由的 Bearer token |
 | `--allow-unauthenticated[=BOOL]` | `false` | 允许非 loopback 无鉴权绑定 |
 
@@ -159,6 +176,9 @@ olaya models list
 olaya models show laya
 olaya models pull laya
 olaya models export --dir ./registry
+
+# 删除本地权重、store manifest 和不再被引用的 blob
+olaya models remove laya --purge
 ```
 
 - `--registry-dir` / `OLAYA_REGISTRY_DIR` 选择文件系统目录。
@@ -169,6 +189,16 @@ olaya models export --dir ./registry
 - Hugging Face 下载默认使用 `https://hf-mirror.com`；设置
   `HF_ENDPOINT=https://huggingface.co` 可使用官方端点。
 - `models list` 默认把 alias 归到规范模型下；`--all` 输出与 API 一致的扁平列表。
+- `olaya models add <manifest>` 把该 manifest 写入文件系统 registry（用 `--force` 覆盖冲突文件）；
+  `olaya models remove <name-or-alias>` 删除匹配的 manifest 文件。不带 `--purge` 时两者都不会删除
+  权重或 content store blob，且都要求使用文件系统 registry（`[registry].store = false`）。
+- `olaya models remove <name-or-alias> --purge` 还会删除物化目录 `models_dir/<name>`、该模型的
+  store manifest、registry manifest，以及不再被任何剩余模型引用的 blob，并报告回收的字节数。
+  它适用于两种 catalog 来源。托管 catalog 不会被修改，因此仍在远端目录中的模型仍会出现在列表里，
+  下次 pull 会重新下载。
+- 隐式 `$OLAYA_HOME/registry` 会合并不与远端 catalog 冲突的本地 manifest，因此 `models add`
+  新增的模型会立即生效。与远端名称/别名冲突的本地条目会被忽略（远端优先）；要覆盖远端模型请
+  显式传入 `--registry-dir`。
 - `olaya models export` 写出规范的 `v1/library/<family>/manifests/<name>.json` 布局，幂等；
   `--force` 覆盖内容不同的文件。
 

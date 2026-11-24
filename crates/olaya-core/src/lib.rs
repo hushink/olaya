@@ -47,7 +47,7 @@ pub use manifest::{
     ANNOTATION_PATH, ANNOTATION_ROLE, Descriptor, FileRole, MEDIA_CALIBRATION, MEDIA_CONFIG,
     MEDIA_DECISION, MEDIA_LICENSE, MEDIA_PICKLE, MEDIA_README, MEDIA_SAFETENSORS, MEDIA_TOKENIZER,
     MEDIA_TYPE_MANIFEST, ManifestError, ManifestFile, ModelConfig, OciManifest, REPO_MANIFEST_FILE,
-    REPO_MANIFEST_SCHEMA, RepoManifest, RouterConfig,
+    REPO_MANIFEST_SCHEMA, RepoManifest, RouterConfig, is_safe_relative_path, store_component,
 };
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, RuntimeMetrics};
 pub use model::{ModelMetadata, ModelMetadataList, is_valid_release_date};
@@ -87,7 +87,8 @@ pub const MAX_QUESTIONS: usize = 256;
 pub const MAX_CHOICE_OPTIONS: usize = 255;
 /// Maximum number of score levels.
 pub const MAX_SCORE_LEVELS: usize = 10;
-/// Maximum state length in tokens (server boundary).
+/// Recommended maximum state length in tokens. Model families enforce their
+/// own context limits and report `InputTooLong`/`StateTruncated`.
 pub const MAX_STATE_TOKENS: usize = 65_536;
 /// Maximum request body size in bytes.
 pub const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;

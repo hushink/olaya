@@ -164,7 +164,9 @@ match client.system_one(state, questions).await {
 
 The defaults mirror the official SDK: two retries, exponential backoff from 500 ms to 5 s with 25%
 jitter, retries on 408/429/5xx, `Retry-After` support, and a 30 s total budget per call. Each
-request also has a 10 s timeout.
+request also has a 10 s timeout. Server-supplied `Retry-After` delays are capped at 60 s
+(`MAX_RETRY_AFTER`) so a hostile server cannot stall a client indefinitely. Response bodies are
+limited to 16 MiB (`MAX_RESPONSE_BYTES`); larger bodies return `Error::ResponseTooLarge`.
 
 ```rust
 use std::time::Duration;

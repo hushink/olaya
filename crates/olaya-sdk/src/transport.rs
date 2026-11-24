@@ -1,11 +1,13 @@
 //! Helpers shared by the async and blocking transports.
 
+use std::time::Duration;
+
 use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::config::Compression;
+use crate::config::{Compression, DEFAULT_TIMEOUT};
 use crate::error::{ApiError, Error, ErrorBody};
 use crate::question::Question;
 use crate::request::SystemOneRequest;
@@ -13,6 +15,122 @@ use crate::request::SystemOneRequest;
 pub(crate) const REQUEST_ID_HEADER: &str = "x-typesafe-request-id";
 pub(crate) const DANGER_ZONE_IMAGES: &str = "typesafe-danger-zone-images";
 pub(crate) const DANGER_ZONE_LONG_CONTEXT: &str = "typesafe-danger-zone-long-context";
+/// Maximum response body accepted from the API. Answers are small; a hostile
+/// or broken server must not be able to exhaust client memory.
+pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+pub(crate) fn body_error(
+    method: &'static str,
+    endpoint: &str,
+    timeout: Option<Duration>,
+    source: reqwest::Error,
+) -> Error {
+    if source.is_timeout() {
+        Error::Timeout {
+            method,
+            endpoint: endpoint.to_owned(),
+            timeout: timeout.unwrap_or(DEFAULT_TIMEOUT),
+            attempts: 1,
+            source: Some(Box::new(source)),
+        }
+    } else {
+        Error::Transport {
+            method,
+            endpoint: endpoint.to_owned(),
+            attempts: 1,
+            source,
+        }
+    }
+}
+
+pub(crate) async fn read_body(
+    mut response: reqwest::Response,
+    method: &'static str,
+    endpoint: &str,
+    timeout: Option<Duration>,
+) -> Result<Vec<u8>, Error> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(Error::ResponseTooLarge {
+            method,
+            endpoint: endpoint.to_owned(),
+            limit: MAX_RESPONSE_BYTES,
+        });
+    }
+    let mut bytes = Vec::new();
+    loop {
+        let chunk = response
+            .chunk()
+            .await
+            .map_err(|source| body_error(method, endpoint, timeout, source))?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(Error::ResponseTooLarge {
+                method,
+                endpoint: endpoint.to_owned(),
+                limit: MAX_RESPONSE_BYTES,
+            });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+#[cfg(feature = "blocking")]
+pub(crate) fn read_body_blocking(
+    response: reqwest::blocking::Response,
+    method: &'static str,
+    endpoint: &str,
+    timeout: Option<Duration>,
+) -> Result<Vec<u8>, Error> {
+    use std::io::Read;
+
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(Error::ResponseTooLarge {
+            method,
+            endpoint: endpoint.to_owned(),
+            limit: MAX_RESPONSE_BYTES,
+        });
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_RESPONSE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| {
+            let timed_out = source.kind() == std::io::ErrorKind::TimedOut
+                || source.get_ref().is_some_and(|inner| {
+                    inner
+                        .downcast_ref::<reqwest::Error>()
+                        .is_some_and(reqwest::Error::is_timeout)
+                });
+            if timed_out {
+                Error::Timeout {
+                    method,
+                    endpoint: endpoint.to_owned(),
+                    timeout: timeout.unwrap_or(DEFAULT_TIMEOUT),
+                    attempts: 1,
+                    source: None,
+                }
+            } else {
+                Error::Io(source)
+            }
+        })?;
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(Error::ResponseTooLarge {
+            method,
+            endpoint: endpoint.to_owned(),
+            limit: MAX_RESPONSE_BYTES,
+        });
+    }
+    Ok(bytes)
+}
 
 /// Read the request id from response headers.
 pub(crate) fn request_id(headers: &HeaderMap) -> Option<String> {

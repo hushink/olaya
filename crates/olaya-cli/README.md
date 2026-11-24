@@ -29,7 +29,7 @@ to the full path of `cl.exe`; otherwise `nvcc` fails with `Cannot find compiler 
 | `olaya serve` | Start the HTTP server |
 | `olaya models list/show/pull` | Inspect or download models |
 | `olaya models export` | Materialize the catalog into a registry directory |
-| `olaya models add/remove` | Edit the runtime catalog |
+| `olaya models add/remove` | Write or remove a filesystem-registry manifest; `remove --purge` deletes local weights and blobs |
 | `olaya models stored/manifest/verify` | Inspect the OCI content store |
 | `olaya doctor` | Print paths, catalog source, and diagnostics |
 
@@ -82,6 +82,12 @@ max_batch = 32
 batch_wait_ms = 2
 max_body_bytes = 8388608
 max_queue = 64
+request_timeout_secs = 600
+max_operations = 4
+# Browser origins allowed to call the API; empty disables CORS.
+# cors_origins = ["https://app.example.com"]
+# Extra Host names accepted by the server.
+# allowed_hosts = ["olaya.internal"]
 
 [hub]
 # models_dir = "models"
@@ -90,6 +96,12 @@ max_queue = 64
 # store_dir = "store"
 # offline = false
 hf_endpoint = "https://hf-mirror.com"
+# proxy = "http://127.0.0.1:7890"
+# no_proxy = "localhost,127.0.0.1"
+# allow_private_network = false
+download_timeout_secs = 60
+connect_timeout_secs = 15
+download_retries = 5
 
 [registry]
 # dir = "./registry"
@@ -144,6 +156,11 @@ management API under `/api/*`.
 | `--batch-wait-ms` | `2` | Collection window for a batch |
 | `--max-body-bytes` | `8388608` | Maximum HTTP request body |
 | `--max-queue` | `64` | Maximum queued requests |
+| `--request-timeout-secs` | `600` | Cancel one request, including body reads, after this many seconds (`0` disables) |
+| `--max-operations` | `4` | Concurrent `/api/pull` and `/api/load` operations |
+| `--cors-origin` | none | Allowed browser origin; repeatable or comma-separated; empty disables CORS |
+| `--allowed-host` | none | Extra `Host` values accepted by the server |
+| `--allow-private-network[=BOOL]` | `false` | Allow manifests and downloads to reach loopback/private endpoints (global) |
 | `--api-key` | `OLAYA_API_KEY` | Bearer token for all routes except `/health` |
 | `--allow-unauthenticated[=BOOL]` | `false` | Allow a non-loopback bind without a key |
 
@@ -163,6 +180,9 @@ olaya models list
 olaya models show laya
 olaya models pull laya
 olaya models export --dir ./registry
+
+# delete local weights, store manifests, and unreferenced blobs
+olaya models remove laya --purge
 ```
 
 - `--registry-dir` / `OLAYA_REGISTRY_DIR` selects a filesystem catalog.
@@ -176,6 +196,18 @@ olaya models export --dir ./registry
 - `models list` groups aliases under each canonical model; `--all` emits the flat API-style list.
 - `olaya models export` writes the canonical `v1/library/<family>/manifests/<name>.json` layout and
   is idempotent; `--force` overwrites changed files.
+- `olaya models add <manifest>` writes that manifest into the filesystem registry (use `--force` to
+  replace a conflicting file); `olaya models remove <name-or-alias>` deletes the matching manifest
+  files. Without `--purge` neither command deletes weights or content-store blobs, and both require
+  a filesystem registry (`[registry].store = false`).
+- `olaya models remove <name-or-alias> --purge` also deletes the materialized `models_dir/<name>`
+  tree, the model's store manifests, the registry manifest, and every blob that no remaining model
+  references. It works with either catalog source and reports reclaimed bytes. The hosted catalog is
+  never modified, so a model that is still in the remote catalog remains listed and a later pull
+  downloads it again.
+- The implicit `$OLAYA_HOME/registry` merges local manifests that do not conflict with the remote
+  catalog, so `models add` of a new model is visible immediately. Local entries that collide with a
+  remote name/alias are ignored (remote wins); use an explicit `--registry-dir` to override one.
 
 Downloads and storage live under `OLAYA_HOME` (default `~/.olaya`). See the
 [workspace README](https://github.com/hushink/olaya#catalog-and-storage) for every directory and

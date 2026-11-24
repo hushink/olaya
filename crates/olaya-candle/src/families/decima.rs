@@ -444,6 +444,11 @@ pub fn ordinal_log_probs(scores: &[f32], g: &[f32], gap: &[f32], temperature: f6
         .iter()
         .map(|&value| softplus(f64::from(value)) + 1e-3)
         .collect();
+    if gaps.len() < k - 1 {
+        // A malformed head returned fewer gap logits than boundaries; report
+        // an empty distribution instead of panicking on the slice below.
+        return Vec::new();
+    }
     let half = gaps.iter().sum::<f64>() / 2.0;
     let mut above = Vec::with_capacity(k - 1);
     let mut threshold = 0.0;

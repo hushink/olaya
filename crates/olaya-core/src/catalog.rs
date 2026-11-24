@@ -41,7 +41,6 @@ impl CatalogBundle {
             ));
         }
         let mut names = HashSet::with_capacity(self.manifests.len());
-        let mut aliases = HashSet::new();
         for manifest in &self.manifests {
             manifest
                 .validate()
@@ -55,6 +54,12 @@ impl CatalogBundle {
                     manifest.name
                 )));
             }
+        }
+        // Check aliases against every canonical name, not only the names seen
+        // so far: an alias must never shadow a model defined later in the
+        // bundle.
+        let mut aliases = HashSet::new();
+        for manifest in &self.manifests {
             for alias in &manifest.aliases {
                 if names.contains(alias.as_str()) || !aliases.insert(alias.as_str()) {
                     return Err(RegistryError::Unavailable(format!(
@@ -85,6 +90,44 @@ mod tests {
         let bundle = CatalogBundle {
             schema_version: CATALOG_SCHEMA_VERSION + 1,
             manifests: Vec::new(),
+        };
+        assert!(bundle.validate().is_err());
+    }
+
+    fn manifest(name: &str, aliases: &[&str]) -> RepoManifest {
+        RepoManifest {
+            schema_version: crate::manifest::REPO_MANIFEST_SCHEMA,
+            name: name.to_owned(),
+            aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
+            family: "tiny".to_owned(),
+            engine: "candle".to_owned(),
+            arch: "custom".to_owned(),
+            format: "safetensors".to_owned(),
+            layout: "tiny-v1".to_owned(),
+            subfolder: None,
+            files: vec![crate::manifest::ManifestFile {
+                path: "model.safetensors".to_owned(),
+                role: crate::manifest::FileRole::Weights,
+                sha256: None,
+                size: Some(1),
+                url: None,
+            }],
+            calibration_mode: Default::default(),
+            capabilities: Default::default(),
+            router: None,
+            license: "Apache-2.0".to_owned(),
+            description: "tiny".to_owned(),
+            release_date: None,
+            source: None,
+            revision: None,
+        }
+    }
+
+    #[test]
+    fn aliases_must_not_shadow_a_later_model_name() {
+        let bundle = CatalogBundle {
+            schema_version: CATALOG_SCHEMA_VERSION,
+            manifests: vec![manifest("first", &["second"]), manifest("second", &[])],
         };
         assert!(bundle.validate().is_err());
     }

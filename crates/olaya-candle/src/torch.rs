@@ -20,6 +20,20 @@ use zip::ZipArchive;
 
 use crate::ModelError;
 
+/// Upper bound for the pickled state-dict description inside the ZIP.
+const MAX_PICKLE_BYTES: u64 = 256 * 1024 * 1024;
+/// Upper bound for one decompressed tensor storage.
+const MAX_TENSOR_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// Upper bound for all tensor storages in one checkpoint.
+const MAX_TOTAL_TENSOR_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+/// Maximum nesting depth of a pickled value. A malicious file must not be able
+/// to build a structure whose recursive drop overflows the stack.
+const MAX_VALUE_DEPTH: usize = 128;
+/// Maximum number of pickle opcodes processed.
+const MAX_PICKLE_OPS: usize = 10_000_000;
+/// Maximum pickle value stack size.
+const MAX_PICKLE_STACK: usize = 1_000_000;
+
 /// Load every tensor of a `torch.save` state dict as candle tensors.
 ///
 /// Tensor names are the state-dict keys (for example
@@ -37,19 +51,32 @@ pub fn load_state_dict(
         .strip_suffix("data.pkl")
         .unwrap_or_default()
         .trim_end_matches('/');
-    let mut pickle = Vec::new();
-    archive
+    let entry = archive
         .by_name(&pickle_name)
-        .map_err(|error| ModelError::config(format!("{}: {error}", path.display())))?
-        .read_to_end(&mut pickle)?;
+        .map_err(|error| ModelError::config(format!("{}: {error}", path.display())))?;
+    if entry.size() > MAX_PICKLE_BYTES {
+        return Err(ModelError::config(format!(
+            "{}: data.pkl is larger than {MAX_PICKLE_BYTES} bytes",
+            path.display()
+        )));
+    }
+    let mut pickle = Vec::new();
+    entry.take(MAX_PICKLE_BYTES + 1).read_to_end(&mut pickle)?;
+    if pickle.len() as u64 > MAX_PICKLE_BYTES {
+        return Err(ModelError::config(format!(
+            "{}: data.pkl exceeds the {MAX_PICKLE_BYTES}-byte limit",
+            path.display()
+        )));
+    }
 
     let root = Unpickler::new(&pickle).run()?;
     let mut references = HashMap::new();
     collect_tensors("", &root, &mut references)?;
 
     let mut tensors = HashMap::with_capacity(references.len());
+    let mut total_bytes = 0u64;
     for (name, reference) in references {
-        let tensor = read_tensor(&mut archive, prefix, &reference, device)
+        let tensor = read_tensor(&mut archive, prefix, &reference, device, &mut total_bytes)
             .map_err(|error| ModelError::config(format!("{name}: {error}")))?;
         tensors.insert(name, tensor);
     }
@@ -99,12 +126,42 @@ enum Value {
     /// carry their numbers in tensors instead.
     Float(#[allow(dead_code)] f64),
     String(String),
-    Tuple(Vec<Value>),
-    List(Vec<Value>),
-    Dict(Vec<(Value, Value)>),
+    Tuple(Vec<Value>, usize),
+    List(Vec<Value>, usize),
+    Dict(Vec<(Value, Value)>, usize),
     Global(String, String),
     Storage(StorageRef),
     Tensor(TensorRef),
+}
+
+impl Value {
+    /// Nesting depth of this value; collections track it so the unpickler can
+    /// reject deeply nested input before any recursive drop can happen.
+    fn depth(&self) -> usize {
+        match self {
+            Self::Tuple(_, depth) | Self::List(_, depth) | Self::Dict(_, depth) => *depth,
+            _ => 0,
+        }
+    }
+}
+
+/// Depth of a collection whose children have the given maximum depth.
+fn child_depth(children: usize) -> usize {
+    children.saturating_add(1)
+}
+
+fn checked_depth(children: usize) -> Result<usize, ModelError> {
+    let depth = child_depth(children);
+    if depth > MAX_VALUE_DEPTH {
+        return Err(ModelError::config(format!(
+            "torch pickle value is nested deeper than {MAX_VALUE_DEPTH} levels"
+        )));
+    }
+    Ok(depth)
+}
+
+fn max_depth<'a>(values: impl IntoIterator<Item = &'a Value>) -> usize {
+    values.into_iter().map(Value::depth).max().unwrap_or(0)
 }
 
 fn collect_tensors(
@@ -113,7 +170,7 @@ fn collect_tensors(
     out: &mut HashMap<String, TensorRef>,
 ) -> Result<(), ModelError> {
     match value {
-        Value::Dict(items) => {
+        Value::Dict(items, _) => {
             for (key, value) in items {
                 let Value::String(key) = key else {
                     continue;
@@ -144,6 +201,7 @@ fn read_tensor<R: Read + std::io::Seek>(
     prefix: &str,
     reference: &TensorRef,
     device: &Device,
+    total_bytes: &mut u64,
 ) -> Result<Tensor, ModelError> {
     let element = reference.storage.dtype.size_in_bytes();
     let storage_bytes = reference
@@ -151,16 +209,37 @@ fn read_tensor<R: Read + std::io::Seek>(
         .numel
         .checked_mul(element)
         .ok_or_else(|| ModelError::config("storage size overflows usize"))?;
+    if storage_bytes as u64 > MAX_TENSOR_BYTES {
+        return Err(ModelError::config(format!(
+            "tensor storage is larger than the {MAX_TENSOR_BYTES}-byte limit"
+        )));
+    }
+    *total_bytes = total_bytes
+        .checked_add(storage_bytes as u64)
+        .ok_or_else(|| ModelError::config("total tensor size overflows"))?;
+    if *total_bytes > MAX_TOTAL_TENSOR_BYTES {
+        return Err(ModelError::config(format!(
+            "checkpoint tensors exceed the {MAX_TOTAL_TENSOR_BYTES}-byte limit"
+        )));
+    }
     let element_name = if prefix.is_empty() {
         format!("data/{}", reference.storage.key)
     } else {
         format!("{prefix}/data/{}", reference.storage.key)
     };
-    let mut entry = archive.by_name(&element_name).map_err(|error| {
+    let entry = archive.by_name(&element_name).map_err(|error| {
         ModelError::config(format!("missing storage entry {element_name:?}: {error}"))
     })?;
+    let declared = entry.size();
+    if declared != storage_bytes as u64 {
+        return Err(ModelError::config(format!(
+            "storage {element_name:?} declares {declared} bytes, expected {storage_bytes}"
+        )));
+    }
     let mut bytes = Vec::with_capacity(storage_bytes);
-    entry.read_to_end(&mut bytes)?;
+    entry
+        .take(storage_bytes as u64 + 1)
+        .read_to_end(&mut bytes)?;
     if bytes.len() != storage_bytes {
         return Err(ModelError::config(format!(
             "storage {element_name:?} has {} bytes, expected {storage_bytes}",
@@ -198,7 +277,15 @@ fn read_tensor<R: Read + std::io::Seek>(
             device,
         )?)
     } else {
-        let mut contiguous = vec![0u8; count * element];
+        let bytes_needed = count
+            .checked_mul(element)
+            .ok_or_else(|| ModelError::config("strided tensor size overflows usize"))?;
+        if bytes_needed as u64 > MAX_TENSOR_BYTES {
+            return Err(ModelError::config(format!(
+                "strided tensor is larger than the {MAX_TENSOR_BYTES}-byte limit"
+            )));
+        }
+        let mut contiguous = vec![0u8; bytes_needed];
         let mut index = vec![0usize; reference.shape.len()];
         for linear in 0..count {
             let mut at = reference.offset as isize;
@@ -234,7 +321,13 @@ fn contiguous(shape: &[usize], stride: &[isize]) -> bool {
         if dim > 1 && stride != expected {
             return false;
         }
-        expected *= dim as isize;
+        let Ok(dim) = isize::try_from(dim) else {
+            return false;
+        };
+        let Some(next) = expected.checked_mul(dim) else {
+            return false;
+        };
+        expected = next;
     }
     true
 }
@@ -245,6 +338,7 @@ struct Unpickler<'a> {
     stack: Vec<Value>,
     marks: Vec<usize>,
     memo: HashMap<usize, Value>,
+    ops: usize,
 }
 
 impl<'a> Unpickler<'a> {
@@ -255,11 +349,19 @@ impl<'a> Unpickler<'a> {
             stack: Vec::new(),
             marks: Vec::new(),
             memo: HashMap::new(),
+            ops: 0,
         }
     }
 
     fn run(mut self) -> Result<Value, ModelError> {
         loop {
+            self.ops += 1;
+            if self.ops > MAX_PICKLE_OPS {
+                return Err(self.error("pickle exceeds the opcode limit"));
+            }
+            if self.stack.len() > MAX_PICKLE_STACK {
+                return Err(self.error("pickle stack exceeds the value limit"));
+            }
             let opcode = self.read_u8()?;
             match opcode {
                 0x80 => {
@@ -277,54 +379,63 @@ impl<'a> Unpickler<'a> {
                         .ok_or_else(|| self.error("STOP with an empty stack"));
                 }
                 b'(' => self.marks.push(self.stack.len()),
-                b')' => self.stack.push(Value::Tuple(Vec::new())),
+                b')' => self.stack.push(Value::Tuple(Vec::new(), 1)),
                 b't' => {
                     let mark = self.pop_mark()?;
                     let items = self.stack.split_off(mark);
-                    self.stack.push(Value::Tuple(items));
+                    let depth = checked_depth(max_depth(items.iter()))?;
+                    self.stack.push(Value::Tuple(items, depth));
                 }
                 0x85 => self.tuple(1)?,
                 0x86 => self.tuple(2)?,
                 0x87 => self.tuple(3)?,
-                b'}' => self.stack.push(Value::Dict(Vec::new())),
+                b'}' => self.stack.push(Value::Dict(Vec::new(), 1)),
                 b's' => {
                     let value = self.pop()?;
                     let key = self.pop()?;
-                    let Some(Value::Dict(mut items)) = self.stack.pop() else {
+                    let Some(Value::Dict(mut items, depth)) = self.stack.pop() else {
                         return Err(self.error("SETITEM without a dict"));
                     };
+                    let depth =
+                        checked_depth(depth.saturating_sub(1).max(key.depth()).max(value.depth()))?;
                     items.push((key, value));
-                    self.stack.push(Value::Dict(items));
+                    self.stack.push(Value::Dict(items, depth));
                 }
                 b'u' => {
                     let mark = self.pop_mark()?;
                     let items = self.stack.split_off(mark);
-                    let Some(Value::Dict(mut dict)) = self.stack.pop() else {
+                    let Some(Value::Dict(mut dict, depth)) = self.stack.pop() else {
                         return Err(self.error("SETITEMS without a dict"));
                     };
+                    let mut children = depth.saturating_sub(1);
                     let mut items = items.into_iter();
                     while let (Some(key), Some(value)) = (items.next(), items.next()) {
+                        children = children.max(key.depth()).max(value.depth());
                         dict.push((key, value));
                     }
-                    self.stack.push(Value::Dict(dict));
+                    let depth = checked_depth(children)?;
+                    self.stack.push(Value::Dict(dict, depth));
                 }
-                b']' => self.stack.push(Value::List(Vec::new())),
+                b']' => self.stack.push(Value::List(Vec::new(), 1)),
                 b'a' => {
                     let value = self.pop()?;
-                    let Some(Value::List(mut items)) = self.stack.pop() else {
+                    let Some(Value::List(mut items, depth)) = self.stack.pop() else {
                         return Err(self.error("APPEND without a list"));
                     };
+                    let depth = checked_depth(depth.saturating_sub(1).max(value.depth()))?;
                     items.push(value);
-                    self.stack.push(Value::List(items));
+                    self.stack.push(Value::List(items, depth));
                 }
                 b'e' => {
                     let mark = self.pop_mark()?;
                     let items = self.stack.split_off(mark);
-                    let Some(Value::List(mut list)) = self.stack.pop() else {
+                    let Some(Value::List(mut list, depth)) = self.stack.pop() else {
                         return Err(self.error("APPENDS without a list"));
                     };
+                    let depth =
+                        checked_depth(depth.saturating_sub(1).max(max_depth(items.iter())))?;
                     list.extend(items);
-                    self.stack.push(Value::List(list));
+                    self.stack.push(Value::List(list, depth));
                 }
                 b'q' => {
                     let index = self.read_u8()? as usize;
@@ -428,12 +539,13 @@ impl<'a> Unpickler<'a> {
             return Err(self.error("not enough values for a tuple"));
         }
         let items = self.stack.split_off(self.stack.len() - count);
-        self.stack.push(Value::Tuple(items));
+        let depth = checked_depth(max_depth(items.iter()))?;
+        self.stack.push(Value::Tuple(items, depth));
         Ok(())
     }
 
     fn persistent_id(&self, value: Value) -> Result<Value, ModelError> {
-        let Value::Tuple(items) = value else {
+        let Value::Tuple(items, _) = value else {
             return Err(self.error("persistent id is not a tuple"));
         };
         if items.len() < 5 {
@@ -463,11 +575,11 @@ impl<'a> Unpickler<'a> {
             return Err(self.error("REDUCE without a global callable"));
         };
         let args = match args {
-            Value::Tuple(args) => args,
+            Value::Tuple(args, _) => args,
             other => vec![other],
         };
         match (module.as_str(), name.as_str()) {
-            ("collections", "OrderedDict") => Ok(Value::Dict(Vec::new())),
+            ("collections", "OrderedDict") => Ok(Value::Dict(Vec::new(), 1)),
             ("torch._utils", "_rebuild_tensor_v2") => self.rebuild_tensor(&args),
             ("torch._utils", "_rebuild_parameter") => args
                 .into_iter()
@@ -493,10 +605,10 @@ impl<'a> Unpickler<'a> {
         };
         let offset = usize::try_from(*offset)
             .map_err(|_| self.error("_rebuild_tensor_v2 has a negative offset"))?;
-        let Value::Tuple(shape) = &args[2] else {
+        let Value::Tuple(shape, _) = &args[2] else {
             return Err(self.error("_rebuild_tensor_v2 shape is not a tuple"));
         };
-        let Value::Tuple(stride) = &args[3] else {
+        let Value::Tuple(stride, _) = &args[3] else {
             return Err(self.error("_rebuild_tensor_v2 stride is not a tuple"));
         };
         let shape = shape
@@ -682,6 +794,20 @@ mod tests {
         pickle.push(b'.');
         let value = Unpickler::new(&pickle).run().expect("pickle");
         assert!(matches!(value, Value::String(text) if text == "ok"));
+    }
+
+    #[test]
+    fn rejects_excessively_nested_pickles() {
+        // MARK x (MAX_VALUE_DEPTH + 1), NONE, TUPLE x (MAX_VALUE_DEPTH + 1)
+        // builds the same number of nested one-element tuples.
+        let levels = MAX_VALUE_DEPTH + 1;
+        let mut pickle = vec![0x80, 2];
+        pickle.extend(std::iter::repeat_n(b'(', levels));
+        pickle.push(b'N');
+        pickle.extend(std::iter::repeat_n(b't', levels));
+        pickle.push(b'.');
+        let error = Unpickler::new(&pickle).run().expect_err("nested pickle");
+        assert!(error.to_string().contains("nested"), "{error}");
     }
 
     #[test]

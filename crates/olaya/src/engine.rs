@@ -603,9 +603,22 @@ fn pull_inner(
         }
     }
 
-    let manifest = inner
-        .hub
-        .pull(reference, resolved.as_ref().map(|(_, manifest)| manifest))?;
+    let manifest = match resolved.as_ref() {
+        Some((_, hint)) => inner.hub.pull(reference, Some(hint))?,
+        None => {
+            // Fetch the self-describing manifest first so a repository cannot
+            // silently replace an existing catalog model with the same name.
+            let manifest = inner.hub.fetch_manifest(reference)?;
+            manifest.validate().map_err(|error| RuntimeError::Storage {
+                message: format!("invalid manifest from {reference}: {error}"),
+            })?;
+            ensure_pull_does_not_clobber(inner, &manifest, reference)?;
+            inner
+                .hub
+                .validate_manifest_network(&manifest, reference, true)?;
+            inner.hub.pull(reference, Some(&manifest))?
+        }
+    };
     inner
         .catalog
         .write()
@@ -628,6 +641,31 @@ fn pull_inner(
     }
 
     Ok(manifest)
+}
+
+/// Refuse to let an uncatalogued repository replace an existing model with the
+/// same canonical name or alias. Without this check, `models pull <other-url>`
+/// could silently overwrite a trusted catalog entry.
+fn ensure_pull_does_not_clobber(
+    inner: &EngineInner,
+    manifest: &RepoManifest,
+    reference: &str,
+) -> Result<(), RuntimeError> {
+    for candidate in
+        std::iter::once(manifest.name.as_str()).chain(manifest.aliases.iter().map(String::as_str))
+    {
+        if let Some((canonical, existing)) = inner.resolve(candidate)
+            && existing != *manifest
+        {
+            return Err(RuntimeError::InvalidRequest {
+                message: format!(
+                    "refusing to replace existing model {canonical:?} with {reference}; \
+                     remove it from the catalog first"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn router_targets(router: &RouterConfig) -> Vec<String> {
@@ -687,25 +725,39 @@ fn capability_error(
     questions: &Questions,
     capabilities: &Capabilities,
 ) -> Option<Error> {
-    for (_, question) in questions.iter() {
+    for (question_id, question) in questions.iter() {
         let qtype = QType::of(question);
-        let message = if !capabilities.supports(qtype) {
-            Some(format!(
-                "model {canonical:?} does not support {} questions",
-                qtype.name()
-            ))
-        } else if question.is_ordinal() && !capabilities.ordinal {
-            Some(format!(
-                "model {canonical:?} does not support ordinal choices"
-            ))
-        } else {
-            None
-        };
-        if let Some(message) = message {
+        if !capabilities.supports(qtype) {
             return Some(Error::Model {
                 model: canonical.to_owned(),
-                source: RuntimeError::InvalidRequest { message },
+                source: RuntimeError::InvalidRequest {
+                    message: format!(
+                        "model {canonical:?} does not support {} questions",
+                        qtype.name()
+                    ),
+                },
             });
+        }
+        if question.is_ordinal() && !capabilities.ordinal {
+            return Some(Error::Model {
+                model: canonical.to_owned(),
+                source: RuntimeError::InvalidRequest {
+                    message: format!("model {canonical:?} does not support ordinal choices"),
+                },
+            });
+        }
+        if let Some(limit) = capabilities.max_options {
+            let options = question.num_options();
+            if options > limit {
+                return Some(Error::Model {
+                    model: canonical.to_owned(),
+                    source: RuntimeError::TooManyOptions {
+                        question: question_id.clone(),
+                        options,
+                        limit,
+                    },
+                });
+            }
         }
     }
     None

@@ -3,19 +3,25 @@ use std::time::Instant;
 
 use axum::body::to_bytes;
 use axum::extract::{DefaultBodyLimit, FromRequest, Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+#[cfg(feature = "serve-multipart")]
+use base64::Engine;
 use indexmap::IndexMap;
+#[cfg(feature = "serve-multipart")]
+use olaya_core::AssetFormat;
 use olaya_core::{
-    Asset, AssetKind, DecisionRuntime, ModelMetadataList, Question, Questions, REQUEST_ID_HEADER,
-    RepoManifest, SystemOneRequest, SystemOneResponse, new_request_id, parse_request_slice,
+    Asset, AssetKind, DANGER_ZONE_IMAGES_HEADER, DANGER_ZONE_LONG_CONTEXT_HEADER, DecisionRuntime,
+    ModelMetadataList, Question, Questions, REQUEST_ID_HEADER, RepoManifest, SystemOneRequest,
+    SystemOneResponse, new_request_id, parse_request_slice,
 };
 use serde::Deserialize;
 use serde_json::json;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::timeout::TimeoutLayer;
 
 use crate::serve::error::ApiError;
 use crate::serve::state::{AppState, ServeConfig};
@@ -38,7 +44,7 @@ pub fn router(runtime: Arc<dyn DecisionRuntime>, config: ServeConfig) -> Router 
     let state = AppState::new(runtime, config);
     let max_body = state.config.max_body_bytes;
 
-    Router::new()
+    let mut router = Router::new()
         .route("/health", get(health))
         .route("/v1/systemone", post(systemone))
         .route("/v1/models", get(v1_models))
@@ -50,15 +56,60 @@ pub fn router(runtime: Arc<dyn DecisionRuntime>, config: ServeConfig) -> Router 
         .route("/api/pull", post(api_pull))
         .route("/api/delete", delete(api_delete))
         .route("/metrics", get(metrics))
-        .layer(DefaultBodyLimit::max(max_body))
+        .layer(DefaultBodyLimit::max(max_body));
+    if !state.config.request_timeout.is_zero() {
+        // Bounds slow or stalled clients, including slow body reads.
+        router = router.layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            state.config.request_timeout,
+        ));
+    }
+    let router = router
         .layer(middleware::from_fn_with_state(state.clone(), auth))
-        .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn_with_state(state.clone(), host_guard));
+    // CORS is opt-in. A permissive layer on a loopback server without an API
+    // key lets any web page invoke model management and inference endpoints.
+    let router = match cors_layer(&state.config.cors_origins) {
+        Some(layer) => router.layer(layer),
+        None => router,
+    };
+    router
         .layer(middleware::from_fn_with_state(state.clone(), observe))
         .with_state(state)
 }
 
+fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
+    if origins.is_empty() {
+        return None;
+    }
+    let origins = origins
+        .iter()
+        .filter_map(|origin| HeaderValue::from_str(origin.trim()).ok())
+        .collect::<Vec<_>>();
+    if origins.is_empty() {
+        return None;
+    }
+    Some(
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(origins))
+            .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+            .allow_headers([
+                header::ACCEPT,
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                HeaderName::from_static(REQUEST_ID_HEADER),
+                HeaderName::from_static(DANGER_ZONE_IMAGES_HEADER),
+                HeaderName::from_static(DANGER_ZONE_LONG_CONTEXT_HEADER),
+            ])
+            .expose_headers([HeaderName::from_static(REQUEST_ID_HEADER)]),
+    )
+}
+
 /// Bind and serve until the process is stopped.
 pub async fn serve(runtime: Arc<dyn DecisionRuntime>, config: ServeConfig) -> std::io::Result<()> {
+    config
+        .validate()
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     if config.api_key.is_none() && !config.allow_unauthenticated && !config.is_loopback() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -127,13 +178,22 @@ async fn api_load(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ModelRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let permit = state
+        .operations
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::internal("operation limiter is closed"))?;
     let runtime = state.runtime.clone();
     let model = request.model;
     let loaded = model.clone();
-    tokio::task::spawn_blocking(move || runtime.load(&loaded))
-        .await
-        .map_err(|error| ApiError::internal(format!("load task failed: {error}")))?
-        .map_err(ApiError::runtime)?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        runtime.load(&loaded)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("load task failed: {error}")))?
+    .map_err(ApiError::runtime)?;
     Ok(Json(json!({ "model": model, "loaded": true })))
 }
 
@@ -149,12 +209,21 @@ async fn api_pull(
     State(state): State<Arc<AppState>>,
     Json(request): Json<PullRequest>,
 ) -> Result<Json<RepoManifest>, ApiError> {
+    let permit = state
+        .operations
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::internal("operation limiter is closed"))?;
     let runtime = state.runtime.clone();
     let model = request.model;
-    let manifest = tokio::task::spawn_blocking(move || runtime.pull(&model))
-        .await
-        .map_err(|error| ApiError::internal(format!("pull task failed: {error}")))?
-        .map_err(ApiError::runtime)?;
+    let manifest = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        runtime.pull(&model)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("pull task failed: {error}")))?
+    .map_err(ApiError::runtime)?;
     Ok(Json(manifest))
 }
 
@@ -204,8 +273,26 @@ async fn systemone(
 
     if !part_assets.is_empty() {
         let mut assets = parsed.assets.take().unwrap_or_default();
-        for (name, asset) in part_assets {
-            assets.entry(name).or_insert(asset);
+        for (part_name, part_asset) in part_assets {
+            // The JSON `assets` entry refers to a multipart part by its
+            // `part` field. Fill that entry with the bytes we received
+            // instead of inserting a second asset under the part name.
+            let mut referenced = false;
+            for asset in assets.values_mut() {
+                if asset.part.as_deref() == Some(part_name.as_str()) {
+                    asset.format = part_asset.format;
+                    asset.data_base64 = part_asset.data_base64.clone();
+                    referenced = true;
+                }
+            }
+            if !referenced {
+                if assets.contains_key(&part_name) {
+                    return Err(ApiError::bad_request(format!(
+                        "multipart part {part_name:?} collides with an asset name"
+                    )));
+                }
+                assets.insert(part_name, part_asset);
+            }
         }
         parsed.assets = Some(assets);
     }
@@ -269,19 +356,40 @@ async fn read_multipart(
         .map_err(|error| ApiError::bad_request(format!("multipart: {error}")))?
     {
         let name = field.name().unwrap_or_default().to_owned();
+        if name.is_empty() {
+            return Err(ApiError::bad_request("multipart part has no name"));
+        }
+        let content_type = field.content_type().unwrap_or_default().to_owned();
         let bytes = field
             .bytes()
             .await
             .map_err(|error| ApiError::bad_request(format!("multipart: {error}")))?;
         if name == "request" {
+            if request_body.is_some() {
+                return Err(ApiError::bad_request(
+                    "multipart request has more than one `request` part",
+                ));
+            }
             request_body = Some(bytes.to_vec());
         } else {
+            if assets.contains_key(&name) {
+                return Err(ApiError::bad_request(format!(
+                    "multipart has more than one `{name}` part"
+                )));
+            }
+            // Keep the bytes usable by runtimes that implement
+            // `predict_with_assets`; the previous implementation dropped them.
+            let format = image_format(&content_type, &bytes).ok_or_else(|| {
+                ApiError::bad_request(format!(
+                    "multipart part `{name}` is not a supported PNG/JPEG image"
+                ))
+            })?;
             assets.insert(
                 name.clone(),
                 Asset {
                     kind: AssetKind::Image,
-                    format: None,
-                    data_base64: None,
+                    format: Some(format),
+                    data_base64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
                     part: Some(name),
                 },
             );
@@ -302,6 +410,27 @@ async fn read_multipart(
     Err(ApiError::unsupported(
         "multipart requests are not compiled in; enable the `multipart` feature",
     ))
+}
+
+#[cfg(feature = "serve-multipart")]
+fn image_format(content_type: &str, bytes: &[u8]) -> Option<AssetFormat> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some(AssetFormat::Png);
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some(AssetFormat::Jpeg);
+    }
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    match media_type.as_str() {
+        "image/png" => Some(AssetFormat::Png),
+        "image/jpeg" | "image/jpg" => Some(AssetFormat::Jpeg),
+        _ => None,
+    }
 }
 
 async fn observe(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
@@ -370,6 +499,51 @@ async fn auth(State(state): State<Arc<AppState>>, request: Request, next: Next) 
 #[cfg(not(feature = "serve-auth"))]
 async fn auth(State(_state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
     next.run(request).await
+}
+
+/// Reject DNS-rebinding requests. A browser can resolve an attacker-controlled
+/// name to 127.0.0.1, making its requests same-origin; checking `Host` blocks
+/// that even when the local server has no API key.
+async fn host_guard(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
+    if let Some(host) = request.headers().get(header::HOST) {
+        let host = host.to_str().unwrap_or_default();
+        if !host_allowed(&state.config, host) {
+            return ApiError::bad_request("unexpected Host header").into_response();
+        }
+    }
+    next.run(request).await
+}
+
+fn host_allowed(config: &ServeConfig, host: &str) -> bool {
+    let host = host_name(host);
+    if !config.allowed_hosts.is_empty() {
+        return config.allowed_hosts.iter().any(|allowed| {
+            let allowed = allowed.trim();
+            allowed == "*" || host_name(allowed).eq_ignore_ascii_case(host)
+        });
+    }
+    if !config.is_loopback() {
+        return true;
+    }
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    bare.parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
+        || host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case(host_name(&config.host))
+}
+
+fn host_name(host: &str) -> &str {
+    let host = host.trim();
+    if let Some(rest) = host.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            return &host[..end + 2];
+        }
+        return host;
+    }
+    host.split(':').next().unwrap_or(host)
 }
 
 fn bearer_ok(headers: &HeaderMap, key: &str) -> bool {

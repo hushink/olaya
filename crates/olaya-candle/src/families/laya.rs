@@ -673,6 +673,24 @@ impl FamilyFactory for Factory {
         let config_path = ctx.dir.join("rl_agent_config.json");
         let config: LayaConfig = serde_json::from_slice(&std::fs::read(&config_path)?)
             .map_err(|error| ModelError::config(format!("{}: {error}", config_path.display())))?;
+        // These values size per-request buffers; reject a malformed checkpoint
+        // instead of attempting an enormous allocation.
+        const MAX_LAYOUT_TOKENS: usize = 1_048_576;
+        if config.max_len == 0 || config.max_len > MAX_LAYOUT_TOKENS {
+            return Err(ModelError::config(format!(
+                "laya max_len must be between 1 and {MAX_LAYOUT_TOKENS}"
+            )));
+        }
+        if config.head_max_len == 0 || config.head_max_len > MAX_LAYOUT_TOKENS {
+            return Err(ModelError::config(format!(
+                "laya head_max_len must be between 1 and {MAX_LAYOUT_TOKENS}"
+            )));
+        }
+        if config.head_layers == 0 || config.head_layers > 128 {
+            return Err(ModelError::config(
+                "laya head_layers must be between 1 and 128",
+            ));
+        }
         let calibration_file = CalibrationFile {
             temperature: config.temperature.clone(),
             temperature_by_options: config.temperature_by_options.clone(),

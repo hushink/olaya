@@ -2,10 +2,11 @@
 use std::collections::HashMap;
 #[cfg(feature = "hub")]
 use std::io::{IsTerminal, Read, Write};
+use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(feature = "hub")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(feature = "hub")]
 use std::sync::mpsc::RecvTimeoutError;
 #[cfg(feature = "hub")]
@@ -19,9 +20,17 @@ use crate::store::Store;
 
 /// Default Hugging Face endpoint used for model downloads.
 pub const DEFAULT_HF_ENDPOINT: &str = "https://hf-mirror.com";
+/// Default idle/read timeout for downloads, in seconds.
+pub const DEFAULT_DOWNLOAD_TIMEOUT_SECS: u64 = 60;
+/// Default TCP connect timeout for downloads, in seconds.
+pub const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 15;
+/// Default retry count for failed HTTP transfers.
+pub const DEFAULT_DOWNLOAD_RETRIES: u32 = 5;
+/// Maximum size of a repository's `olaya.manifest.json`.
+const MAX_REPO_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Where models, downloads, and staging live.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HubConfig {
     /// Materialized model directories.
     pub models_dir: PathBuf,
@@ -38,8 +47,44 @@ pub struct HubConfig {
     pub hf_endpoint: Option<String>,
     /// ModelScope endpoint override.
     pub modelscope_endpoint: Option<String>,
-    /// HTTP/SOCKS proxy for Hub requests.
+    /// HTTP/SOCKS proxy for Hub requests. `Some("")` explicitly disables
+    /// ambient proxy environment variables; `None` keeps reqwest's behavior.
     pub proxy: Option<String>,
+    /// Comma-separated hosts that bypass `proxy`.
+    pub no_proxy: Option<String>,
+    /// Allow manifests to reference loopback, private, or link-local network
+    /// endpoints. Disabled by default to limit SSRF from untrusted manifests.
+    pub allow_private_network: bool,
+    /// Idle/read timeout for download requests, in seconds.
+    pub download_timeout_secs: u64,
+    /// TCP connect timeout for download requests, in seconds.
+    pub connect_timeout_secs: u64,
+    /// Retry attempts for failed HTTP transfers.
+    pub download_retries: u32,
+}
+
+impl std::fmt::Debug for HubConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HubConfig")
+            .field("models_dir", &self.models_dir)
+            .field("cache_dir", &self.cache_dir)
+            .field("tmp_dir", &self.tmp_dir)
+            .field("store_dir", &self.store_dir)
+            .field("offline", &self.offline)
+            .field("hf_endpoint", &self.hf_endpoint.as_deref().map(redact_url))
+            .field(
+                "modelscope_endpoint",
+                &self.modelscope_endpoint.as_deref().map(redact_url),
+            )
+            .field("proxy", &self.proxy.as_deref().map(redact_url))
+            .field("no_proxy", &self.no_proxy)
+            .field("allow_private_network", &self.allow_private_network)
+            .field("download_timeout_secs", &self.download_timeout_secs)
+            .field("connect_timeout_secs", &self.connect_timeout_secs)
+            .field("download_retries", &self.download_retries)
+            .finish()
+    }
 }
 
 impl Default for HubConfig {
@@ -54,6 +99,11 @@ impl Default for HubConfig {
             hf_endpoint: Some(DEFAULT_HF_ENDPOINT.to_owned()),
             modelscope_endpoint: None,
             proxy: None,
+            no_proxy: None,
+            allow_private_network: false,
+            download_timeout_secs: DEFAULT_DOWNLOAD_TIMEOUT_SECS,
+            connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
+            download_retries: DEFAULT_DOWNLOAD_RETRIES,
         }
     }
 }
@@ -106,6 +156,21 @@ impl HubConfig {
         if let Some(proxy) = non_empty_env("OLAYA_PROXY") {
             self.proxy = Some(proxy.to_string_lossy().into_owned());
         }
+        if let Some(hosts) = non_empty_env("OLAYA_NO_PROXY") {
+            self.no_proxy = Some(hosts.to_string_lossy().into_owned());
+        }
+        if let Some(allow) = env_bool("OLAYA_ALLOW_PRIVATE_NETWORK") {
+            self.allow_private_network = allow;
+        }
+        if let Some(seconds) = env_u64("OLAYA_DOWNLOAD_TIMEOUT_SECS") {
+            self.download_timeout_secs = seconds;
+        }
+        if let Some(seconds) = env_u64("OLAYA_CONNECT_TIMEOUT_SECS") {
+            self.connect_timeout_secs = seconds;
+        }
+        if let Some(retries) = env_u32("OLAYA_DOWNLOAD_RETRIES") {
+            self.download_retries = retries;
+        }
         if let Some(offline) = env_bool("OLAYA_OFFLINE") {
             self.offline = offline;
         }
@@ -115,6 +180,34 @@ impl HubConfig {
     /// model or blob directory. Deleting the former must never be able to
     /// remove the latter.
     pub fn validate_layout(&self) -> Result<(), RuntimeError> {
+        if self.download_timeout_secs == 0 || self.download_timeout_secs > 86_400 {
+            return Err(RuntimeError::Storage {
+                message: "[hub].download_timeout_secs must be between 1 and 86400".to_owned(),
+            });
+        }
+        if self.connect_timeout_secs == 0 || self.connect_timeout_secs > 3_600 {
+            return Err(RuntimeError::Storage {
+                message: "[hub].connect_timeout_secs must be between 1 and 3600".to_owned(),
+            });
+        }
+        for (label, endpoint) in [
+            ("hf_endpoint", self.hf_endpoint.as_deref()),
+            ("modelscope_endpoint", self.modelscope_endpoint.as_deref()),
+        ] {
+            if let Some(endpoint) = endpoint {
+                let endpoint = endpoint.trim();
+                let valid = endpoint.split_once("://").is_some_and(|(scheme, rest)| {
+                    !rest.is_empty()
+                        && (scheme.eq_ignore_ascii_case("http")
+                            || scheme.eq_ignore_ascii_case("https"))
+                });
+                if !valid {
+                    return Err(RuntimeError::Storage {
+                        message: format!("[hub].{label} must be an absolute http or https URL"),
+                    });
+                }
+            }
+        }
         let models = normalized_absolute(&self.models_dir)?;
         let store = normalized_absolute(&self.store_dir)?;
         let cache = normalized_absolute(&self.cache_dir)?;
@@ -217,6 +310,30 @@ fn env_bool(key: &str) -> Option<bool> {
     }
 }
 
+fn env_u64(key: &str) -> Option<u64> {
+    let value = non_empty_env(key)?;
+    let text = value.to_string_lossy();
+    match text.trim().parse::<u64>() {
+        Ok(value) => Some(value),
+        Err(_) => {
+            tracing::warn!(variable = key, value = %text, "ignoring invalid numeric environment variable");
+            None
+        }
+    }
+}
+
+fn env_u32(key: &str) -> Option<u32> {
+    let value = non_empty_env(key)?;
+    let text = value.to_string_lossy();
+    match text.trim().parse::<u32>() {
+        Ok(value) => Some(value),
+        Err(_) => {
+            tracing::warn!(variable = key, value = %text, "ignoring invalid numeric environment variable");
+            None
+        }
+    }
+}
+
 fn parse_bool(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),
@@ -291,6 +408,7 @@ impl Hub {
         manifest.validate().map_err(|error| RuntimeError::Storage {
             message: error.to_string(),
         })?;
+        self.validate_manifest_network(&manifest, reference, hint.is_none())?;
 
         let destination = self.config.model_dir(&manifest.name);
         std::fs::create_dir_all(&destination).map_err(storage)?;
@@ -330,7 +448,11 @@ impl Hub {
             .source
             .clone()
             .unwrap_or_else(|| reference.to_owned());
-        tracing::info!(model = %manifest.name, %source, "pulling model");
+        tracing::info!(
+            model = %manifest.name,
+            source = %redact_url(&source),
+            "pulling model"
+        );
         self.download(&source, &destination, &manifest)?;
 
         if !self.files_present(&manifest, &destination) {
@@ -344,6 +466,50 @@ impl Hub {
         }
         import_with_cleanup(store.as_ref(), &manifest, &destination)?;
         Ok(manifest)
+    }
+
+    /// Reject network targets that point at loopback/private/link-local
+    /// addresses unless `allow_private_network` is set. `manifest_is_remote`
+    /// also forbids a remote manifest from redirecting to a local filesystem
+    /// path via `source`.
+    pub(crate) fn validate_manifest_network(
+        &self,
+        manifest: &RepoManifest,
+        reference: &str,
+        manifest_is_remote: bool,
+    ) -> Result<(), RuntimeError> {
+        if self.config.allow_private_network {
+            return Ok(());
+        }
+        let reference_is_local = local_path(reference).is_some();
+        if let Some(source) = manifest.source.as_deref() {
+            if source_is_local(source) {
+                if manifest_is_remote && !reference_is_local {
+                    return Err(RuntimeError::Registry {
+                        message: format!(
+                            "manifest source {} points to the local filesystem; set \
+                             [hub].allow_private_network=true to allow this",
+                            redact_url(source)
+                        ),
+                    });
+                }
+            } else if source.starts_with("http://") || source.starts_with("https://") {
+                self.check_public_url(source, "manifest source")?;
+            }
+        }
+        for file in &manifest.files {
+            if let Some(url) = file.url.as_deref() {
+                self.check_public_url(url, &format!("file {}", file.path))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_public_url(&self, raw: &str, context: &str) -> Result<(), RuntimeError> {
+        if self.config.allow_private_network {
+            return Ok(());
+        }
+        check_public_url(raw, context).map_err(|message| RuntimeError::Registry { message })
     }
 
     fn files_present(&self, manifest: &RepoManifest, dir: &Path) -> bool {
@@ -411,13 +577,55 @@ impl Hub {
             return Ok(());
         }
 
-        let mut builder =
-            reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(300));
+        let known_bytes = missing
+            .iter()
+            .filter_map(|file| file.size)
+            .fold(0u64, u64::saturating_add);
+        let has_unknown_size = missing.iter().any(|file| file.size.is_none());
+        // reqwest's blocking client only exposes a total-request timeout, so
+        // derive a generous bound from the declared sizes instead of stopping
+        // a large download at a fixed 5 minutes.
+        let mut timeout_secs = known_bytes / (256 * 1024) + self.config.download_timeout_secs;
+        if has_unknown_size {
+            timeout_secs = timeout_secs.saturating_add(3600);
+        }
+        let timeout_secs = timeout_secs.clamp(self.config.download_timeout_secs, 24 * 3600);
+
+        let mut builder = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(self.config.connect_timeout_secs))
+            .timeout(Duration::from_secs(timeout_secs));
         if let Some(proxy) = &self.config.proxy {
-            let proxy = reqwest::Proxy::all(proxy).map_err(|error| RuntimeError::Registry {
-                message: format!("invalid proxy {proxy:?}: {error}"),
-            })?;
-            builder = builder.proxy(proxy);
+            if proxy.trim().is_empty() {
+                // Explicitly bypass ambient HTTP(S)_PROXY variables.
+                builder = builder.no_proxy();
+            } else {
+                let mut proxy =
+                    reqwest::Proxy::all(proxy).map_err(|error| RuntimeError::Registry {
+                        message: format!("invalid proxy {}: {error}", redact_url(proxy)),
+                    })?;
+                if let Some(no_proxy) = self
+                    .config
+                    .no_proxy
+                    .as_deref()
+                    .and_then(reqwest::NoProxy::from_string)
+                {
+                    proxy = proxy.no_proxy(Some(no_proxy));
+                }
+                builder = builder.proxy(proxy);
+            }
+        }
+        if !self.config.allow_private_network {
+            // A public URL may redirect to an internal address; validate each
+            // hop before following it.
+            builder = builder.redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    return attempt.error(std::io::Error::other("too many redirects"));
+                }
+                match check_public_url(attempt.url().as_str(), "redirect") {
+                    Ok(()) => attempt.follow(),
+                    Err(message) => attempt.error(std::io::Error::other(message)),
+                }
+            }));
         }
         let client = builder.build().map_err(|error| RuntimeError::Registry {
             message: format!("building the HTTP client: {error}"),
@@ -430,85 +638,124 @@ impl Hub {
                 self.config.hf_endpoint.as_deref(),
                 file.url.as_deref().expect("filtered by url"),
             );
+            let log_url = redact_url(&url);
             let target = base.join(&file.path);
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent).map_err(storage)?;
             }
-            let temp = target.with_extension("part");
-            let mut response = client
-                .get(&url)
-                .send()
-                .and_then(reqwest::blocking::Response::error_for_status)
-                .map_err(|error| RuntimeError::Registry {
-                    message: format!("downloading {url}: {error}"),
-                })?;
-            let total = response.content_length();
+            let temp = download_part_path(&target);
+            let result = (|| -> Result<(), RuntimeError> {
+                let mut response = client
+                    .get(&url)
+                    .send()
+                    .and_then(reqwest::blocking::Response::error_for_status)
+                    .map_err(|error| RuntimeError::Registry {
+                        message: format!("downloading {log_url}: {}", error.without_url()),
+                    })?;
+                let total = response.content_length();
+                if let (Some(expected), Some(total)) = (file.size, total)
+                    && total > expected
+                {
+                    return Err(RuntimeError::Storage {
+                        message: format!(
+                            "{log_url} declares {expected} bytes but the server offers {total}"
+                        ),
+                    });
+                }
+                if interactive {
+                    progress.update(&progress_line(&file.path, 0, total));
+                } else {
+                    tracing::info!(
+                        file = %file.path,
+                        total = %total.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
+                        "downloading file"
+                    );
+                }
+                let mut output = std::fs::File::create(&temp).map_err(storage)?;
+                let mut hasher = Sha256::new();
+                let mut size = 0u64;
+                let mut last_update = Instant::now();
+                let interval = if interactive {
+                    Duration::from_millis(100)
+                } else {
+                    Duration::from_secs(1)
+                };
+                let mut buffer = [0u8; 64 * 1024];
+                loop {
+                    let read =
+                        response
+                            .read(&mut buffer)
+                            .map_err(|error| RuntimeError::Registry {
+                                message: format!("reading {log_url}: {error}"),
+                            })?;
+                    if read == 0 {
+                        break;
+                    }
+                    size += read as u64;
+                    if let Some(expected) = file.size
+                        && size > expected
+                    {
+                        return Err(RuntimeError::Storage {
+                            message: format!(
+                                "{log_url} is larger than the {expected} bytes declared by the manifest"
+                            ),
+                        });
+                    }
+                    hasher.update(&buffer[..read]);
+                    output.write_all(&buffer[..read]).map_err(storage)?;
+                    if last_update.elapsed() >= interval {
+                        if interactive {
+                            progress.update(&progress_line(&file.path, size, total));
+                        } else {
+                            tracing::info!(
+                                file = %file.path,
+                                downloaded = %human_bytes(size),
+                                total = %total.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
+                                "download progress"
+                            );
+                        }
+                        last_update = Instant::now();
+                    }
+                }
+                output.sync_all().map_err(storage)?;
+                drop(output);
+                let digest = hex::encode(hasher.finalize());
+                let invalid = file.size.is_some_and(|expected| expected != size)
+                    || file
+                        .sha256
+                        .as_deref()
+                        .is_some_and(|expected| !expected.eq_ignore_ascii_case(&digest));
+                if invalid {
+                    return Err(RuntimeError::Storage {
+                        message: format!(
+                            "{log_url} does not match the manifest (size {size}, sha256 {digest})"
+                        ),
+                    });
+                }
+                std::fs::rename(&temp, &target).map_err(storage)
+            })();
+            if let Err(error) = result {
+                let _ = std::fs::remove_file(&temp);
+                return Err(error);
+            }
+            let downloaded_size = std::fs::metadata(&target)
+                .ok()
+                .map(|metadata| metadata.len())
+                .or(file.size)
+                .unwrap_or(0);
             if interactive {
-                progress.update(&progress_line(&file.path, 0, total));
+                progress.update(&progress_line(
+                    &file.path,
+                    downloaded_size,
+                    file.size.or(Some(downloaded_size)),
+                ));
             } else {
                 tracing::info!(
                     file = %file.path,
-                    total = %total.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
-                    "downloading file"
+                    size = %human_bytes(downloaded_size),
+                    "downloaded file"
                 );
             }
-            let mut output = std::fs::File::create(&temp).map_err(storage)?;
-            let mut hasher = Sha256::new();
-            let mut size = 0u64;
-            let mut last_update = Instant::now();
-            let interval = if interactive {
-                Duration::from_millis(100)
-            } else {
-                Duration::from_secs(1)
-            };
-            let mut buffer = [0u8; 64 * 1024];
-            loop {
-                let read = response
-                    .read(&mut buffer)
-                    .map_err(|error| RuntimeError::Registry {
-                        message: format!("reading {url}: {error}"),
-                    })?;
-                if read == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..read]);
-                output.write_all(&buffer[..read]).map_err(storage)?;
-                size += read as u64;
-                if last_update.elapsed() >= interval {
-                    if interactive {
-                        progress.update(&progress_line(&file.path, size, total));
-                    } else {
-                        tracing::info!(
-                            file = %file.path,
-                            downloaded = %human_bytes(size),
-                            total = %total.map(human_bytes).unwrap_or_else(|| "unknown".to_owned()),
-                            "download progress"
-                        );
-                    }
-                    last_update = Instant::now();
-                }
-            }
-            drop(output);
-            if interactive {
-                progress.update(&progress_line(&file.path, size, total.or(Some(size))));
-            } else {
-                tracing::info!(file = %file.path, size = %human_bytes(size), "downloaded file");
-            }
-            let digest = hex::encode(hasher.finalize());
-            let invalid = file.size.is_some_and(|expected| expected != size)
-                || file
-                    .sha256
-                    .as_deref()
-                    .is_some_and(|expected| !expected.eq_ignore_ascii_case(&digest));
-            if invalid {
-                let _ = std::fs::remove_file(&temp);
-                return Err(RuntimeError::Storage {
-                    message: format!(
-                        "{url} does not match the manifest (size {size}, sha256 {digest})"
-                    ),
-                });
-            }
-            std::fs::rename(&temp, &target).map_err(storage)?;
         }
         Ok(())
     }
@@ -604,6 +851,10 @@ impl Hub {
         config.hub.hf_endpoint = self.config.hf_endpoint.clone();
         config.hub.modelscope_endpoint = self.config.modelscope_endpoint.clone();
         config.network.proxy = self.config.proxy.clone();
+        config.network.no_proxy = self.config.no_proxy.clone();
+        config.network.timeout_secs = self.config.download_timeout_secs;
+        config.network.connect_timeout_secs = self.config.connect_timeout_secs;
+        config.network.retries = self.config.download_retries;
         config.download.content_cache = false;
         config.download.resume = true;
 
@@ -632,6 +883,43 @@ impl Hub {
             ..Default::default()
         };
 
+        // A previous process may have crashed while the sidecar said
+        // `Running`. shaul 1.2.2 refuses to run such a task, so requeue tasks
+        // whose cross-process run lock is free before adding ours.
+        engine.requeue_stale().map_err(registry)?;
+
+        let requested = options.clone();
+        let mut task = engine
+            .add(link.clone(), destination.to_path_buf(), options)
+            .map_err(registry)?;
+        if task.state == shaul::TaskState::Running {
+            return Err(RuntimeError::Registry {
+                message: format!(
+                    "another olaya process is already downloading {} into {}; \
+                     wait for it to finish and retry",
+                    redact_url(source),
+                    destination.display()
+                ),
+            });
+        }
+        // A pending/paused task may have captured an older manifest's file
+        // list or revision. Resolve that instead of downloading stale paths.
+        let options_changed = task.options.include != requested.include
+            || task.options.exclude != requested.exclude
+            || task.options.revision != requested.revision;
+        if options_changed
+            && (task.state == shaul::TaskState::Pending || task.state == shaul::TaskState::Paused)
+        {
+            if let Err(error) = engine.cancel(task.id) {
+                tracing::warn!(%error, "could not cancel a stale download task");
+            }
+            let mut forced = requested.clone();
+            forced.force = true;
+            task = engine
+                .add(link, destination.to_path_buf(), forced)
+                .map_err(registry)?;
+        }
+
         // shaul reports byte-level progress on a channel; forward it to the
         // log while the blocking download runs.
         let events = engine.subscribe();
@@ -639,9 +927,7 @@ impl Hub {
         let progress_stop = Arc::clone(&stop);
         let progress = std::thread::spawn(move || log_download_progress(events, progress_stop));
 
-        let downloaded = engine
-            .download(link, destination.to_path_buf(), options)
-            .map_err(registry);
+        let downloaded = engine.run_task(task.id).map_err(registry);
         stop.store(true, Ordering::Relaxed);
         let _ = progress.join();
         let task = downloaded?;
@@ -672,14 +958,15 @@ impl Hub {
         })
     }
 
-    /// Fetch `olaya.manifest.json` from a repository that ships one.
-    fn fetch_manifest(&self, reference: &str) -> Result<RepoManifest, RuntimeError> {
+    /// Fetch and parse `olaya.manifest.json` from a repository without
+    /// materializing any model files.
+    ///
+    /// The caller is responsible for validating the manifest before using it.
+    pub fn fetch_manifest(&self, reference: &str) -> Result<RepoManifest, RuntimeError> {
         if local_path(reference).is_some() {
             let path = local_path(reference).expect("checked above");
             let manifest_path = path.join(olaya_core::REPO_MANIFEST_FILE);
-            let bytes = std::fs::read(&manifest_path).map_err(|error| RuntimeError::Storage {
-                message: format!("reading {}: {error}", manifest_path.display()),
-            })?;
+            let bytes = read_manifest_bytes(&manifest_path, false)?;
             return serde_json::from_slice(&bytes).map_err(|error| RuntimeError::Storage {
                 message: format!("parsing {}: {error}", manifest_path.display()),
             });
@@ -689,7 +976,7 @@ impl Hub {
             .config
             .tmp_dir
             .join("manifests")
-            .join(sanitize_reference(reference));
+            .join(staging_reference(reference));
         std::fs::create_dir_all(&staging).map_err(storage)?;
         self.download_paths(
             reference,
@@ -698,17 +985,17 @@ impl Hub {
             None,
             true,
         )?;
-        let manifest_path = find_downloaded(&staging, olaya_core::REPO_MANIFEST_FILE).ok_or_else(
-            || RuntimeError::Registry {
-                message: format!(
-                    "{reference} has no {}; publish one in the repository or add a catalog entry",
-                    olaya_core::REPO_MANIFEST_FILE
-                ),
-            },
-        )?;
-        let bytes = std::fs::read(&manifest_path).map_err(|error| RuntimeError::Registry {
-            message: format!("reading {}: {error}", manifest_path.display()),
-        })?;
+        let manifest_path =
+            find_downloaded(&staging, olaya_core::REPO_MANIFEST_FILE).ok_or_else(|| {
+                RuntimeError::Registry {
+                    message: format!(
+                        "{} has no {}; publish one in the repository or add a catalog entry",
+                        redact_url(reference),
+                        olaya_core::REPO_MANIFEST_FILE
+                    ),
+                }
+            })?;
+        let bytes = read_manifest_bytes(&manifest_path, true)?;
         serde_json::from_slice(&bytes).map_err(|error| RuntimeError::Registry {
             message: format!("parsing {}: {error}", manifest_path.display()),
         })
@@ -1000,10 +1287,18 @@ fn collect_downloaded(root: &Path, dir: &Path, relative: &str, out: &mut Vec<Pat
         return;
     };
     for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        // Do not follow symlinks: a link planted in the model directory must
+        // not let normalization move unrelated files from outside the tree.
+        if file_type.is_symlink() {
+            continue;
+        }
         let path = entry.path();
-        if path.is_dir() {
+        if file_type.is_dir() {
             collect_downloaded(root, &path, relative, out);
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             let Ok(stripped) = path.strip_prefix(root) else {
                 continue;
             };
@@ -1030,8 +1325,14 @@ fn remove_empty_dirs(dir: &Path) {
         return;
     };
     for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
         let path = entry.path();
-        if path.is_dir() {
+        if file_type.is_dir() {
             remove_empty_dirs(&path);
             let _ = std::fs::remove_dir(&path);
         }
@@ -1056,9 +1357,113 @@ fn local_path(reference: &str) -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
+fn check_public_url(raw: &str, context: &str) -> Result<(), String> {
+    let url = url::Url::parse(raw).map_err(|error| format!("invalid URL in {context}: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!("{context} uses a non-HTTP URL"));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| format!("{context} URL has no host"))?;
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(address) = bare.parse::<std::net::IpAddr>() {
+        if !is_public_ip(address) {
+            return Err(format!(
+                "refusing to download from private or loopback address {bare} ({context}); \
+                 set [hub].allow_private_network=true to allow"
+            ));
+        }
+        return Ok(());
+    }
+    let lowercase = bare.to_ascii_lowercase();
+    if lowercase == "localhost"
+        || lowercase.ends_with(".localhost")
+        || lowercase.ends_with(".local")
+    {
+        return Err(format!(
+            "refusing to download from local host {bare} ({context}); set \
+             [hub].allow_private_network=true to allow"
+        ));
+    }
+    let port = url.port_or_known_default().unwrap_or(0);
+    let addresses = (bare, port)
+        .to_socket_addrs()
+        .map_err(|error| format!("resolving {bare} for {context}: {error}"))?;
+    let mut any = false;
+    for address in addresses {
+        any = true;
+        if !is_public_ip(address.ip()) {
+            return Err(format!(
+                "{bare} resolves to a private or loopback address ({context}); set \
+                 [hub].allow_private_network=true to allow"
+            ));
+        }
+    }
+    if !any {
+        return Err(format!("{bare} did not resolve for {context}"));
+    }
+    Ok(())
+}
+
+fn source_is_local(source: &str) -> bool {
+    if source.starts_with("local:") || source.starts_with("file://") {
+        return true;
+    }
+    let path = Path::new(source);
+    path.is_absolute() || path.exists()
+}
+
+/// Whether an address is globally routable enough to be a model source. The
+/// goal is to block SSRF into loopback, private, link-local, CGNAT, and
+/// metadata-style networks; it is intentionally conservative.
+fn is_public_ip(address: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match address {
+        IpAddr::V4(address) => {
+            let octets = address.octets();
+            if address.is_private()
+                || address.is_loopback()
+                || address.is_link_local()
+                || address.is_broadcast()
+                || address.is_documentation()
+                || address.is_multicast()
+                || address.is_unspecified()
+            {
+                return false;
+            }
+            // 0.0.0.0/8, CGNAT 100.64/10, 192.0.0.0/24, 198.18/15, 240/4.
+            if octets[0] == 0
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                || (octets[0] == 198 && matches!(octets[1], 18 | 19))
+                || octets[0] >= 240
+            {
+                return false;
+            }
+            true
+        }
+        IpAddr::V6(address) => {
+            if let Some(mapped) = address.to_ipv4_mapped() {
+                return is_public_ip(IpAddr::V4(mapped));
+            }
+            let segments = address.segments();
+            !address.is_loopback()
+                && !address.is_unspecified()
+                && !address.is_multicast()
+                && (segments[0] & 0xfe00) != 0xfc00 // unique-local fc00::/7
+                && (segments[0] & 0xffc0) != 0xfe80 // link-local fe80::/10
+                && !(segments[0] == 0x2001 && segments[1] == 0x0db8) // documentation
+        }
+    }
+}
+
 fn sanitize_reference(reference: &str) -> String {
     reference
         .chars()
+        .take(64)
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
                 ch
@@ -1067,6 +1472,73 @@ fn sanitize_reference(reference: &str) -> String {
             }
         })
         .collect()
+}
+
+/// A collision-resistant staging directory name for a manifest reference.
+fn staging_reference(reference: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    reference.hash(&mut hasher);
+    format!("{}-{:016x}", sanitize_reference(reference), hasher.finish())
+}
+
+/// Drop credentials and the query/fragment from a URL before it is logged or
+/// returned in an error. Signed download URLs often carry a token in the query.
+pub fn redact_url(value: &str) -> String {
+    if let Some((scheme, rest)) = value.split_once("://") {
+        let authority_end = rest.find('/').unwrap_or(rest.len());
+        let authority = &rest[..authority_end];
+        let path = redact_query(&rest[authority_end..]);
+        if let Some(at) = authority.rfind('@') {
+            return format!("{scheme}://redacted@{}", &authority[at + 1..]) + &path;
+        }
+        return format!("{scheme}://{authority}{path}");
+    }
+    redact_query(value)
+}
+
+fn redact_query(value: &str) -> String {
+    let end = value.find(['?', '#']).unwrap_or(value.len());
+    value[..end].to_owned()
+}
+
+/// A unique sibling file for an in-progress direct-URL download. Using
+/// `with_extension("part")` could collide with a manifest file that already
+/// has that name (and would truncate the final file).
+#[cfg(feature = "hub")]
+fn download_part_path(target: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "download".to_owned());
+    target.with_file_name(format!(
+        ".{name}.olaya-part-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// Read a repository manifest with a size cap. `registry` selects the error
+/// used for filesystem failures (`Storage` for local paths, `Registry` for
+/// downloaded staging).
+fn read_manifest_bytes(path: &Path, registry: bool) -> Result<Vec<u8>, RuntimeError> {
+    let error = |message: String| {
+        if registry {
+            RuntimeError::Registry { message }
+        } else {
+            RuntimeError::Storage { message }
+        }
+    };
+    let metadata = std::fs::metadata(path)
+        .map_err(|source| error(format!("reading {}: {source}", path.display())))?;
+    if metadata.len() > MAX_REPO_MANIFEST_BYTES {
+        return Err(error(format!(
+            "manifest {} is larger than the {MAX_REPO_MANIFEST_BYTES}-byte limit",
+            path.display()
+        )));
+    }
+    std::fs::read(path).map_err(|source| error(format!("reading {}: {source}", path.display())))
 }
 
 fn storage(error: std::io::Error) -> RuntimeError {
@@ -1254,5 +1726,118 @@ mod tests {
 
         let found = find_downloaded(root.path(), olaya_core::REPO_MANIFEST_FILE).expect("found");
         assert_eq!(found, repo.join(olaya_core::REPO_MANIFEST_FILE));
+    }
+
+    #[test]
+    fn redacts_credentials_and_query_tokens() {
+        assert_eq!(
+            redact_url("https://user:pass@example.com/model.bin?token=secret#frag"),
+            "https://redacted@example.com/model.bin"
+        );
+        assert_eq!(
+            redact_url("http://127.0.0.1:8080/download?token=secret"),
+            "http://127.0.0.1:8080/download"
+        );
+        assert_eq!(redact_url("hf://org/repo"), "hf://org/repo");
+        assert_eq!(redact_url("local:C:\\models"), "local:C:\\models");
+    }
+
+    #[test]
+    fn rejects_a_manifest_name_that_escapes_the_model_root() {
+        let root = tempdir().expect("tempdir");
+        let config = HubConfig {
+            models_dir: root.path().join("models"),
+            cache_dir: root.path().join("cache"),
+            tmp_dir: root.path().join("tmp"),
+            store_dir: root.path().join("store"),
+            ..HubConfig::default()
+        };
+        let hub = Hub::new(config);
+        let mut manifest = manifest(None, &[("model.safetensors", 7)]);
+        manifest.name = "../escape".to_owned();
+        let error = hub
+            .pull("https://example.invalid/evil", Some(&manifest))
+            .expect_err("traversal name is rejected");
+        assert!(error.to_string().contains("invalid model name"), "{error}");
+        assert!(!root.path().join("escape").exists());
+    }
+
+    #[cfg(feature = "hub")]
+    #[test]
+    fn direct_download_temp_files_never_collide_with_the_target() {
+        let target = Path::new("repo").join("model.part");
+        let first = download_part_path(&target);
+        let second = download_part_path(&target);
+        assert_ne!(first, target);
+        assert_ne!(first, second);
+        assert!(
+            first
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().contains("olaya-part"))
+        );
+    }
+
+    #[test]
+    fn private_and_loopback_urls_are_rejected_by_default() {
+        let hub = hub();
+        for url in [
+            "http://127.0.0.1/model.bin",
+            "http://10.0.0.1/model.bin",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]/model.bin",
+            "http://localhost/model.bin",
+        ] {
+            assert!(
+                hub.check_public_url(url, "test").is_err(),
+                "private URL was accepted: {url}"
+            );
+        }
+        hub.check_public_url("http://8.8.8.8/model.bin", "test")
+            .expect("public IP URL");
+
+        let config = HubConfig {
+            allow_private_network: true,
+            ..HubConfig::default()
+        };
+        Hub::new(config)
+            .check_public_url("http://127.0.0.1/model.bin", "test")
+            .expect("explicit opt-in");
+    }
+
+    #[test]
+    fn remote_manifests_cannot_use_a_local_source_by_default() {
+        let root = tempdir().expect("tempdir");
+        let config = HubConfig {
+            models_dir: root.path().join("models"),
+            cache_dir: root.path().join("cache"),
+            tmp_dir: root.path().join("tmp"),
+            store_dir: root.path().join("store"),
+            ..HubConfig::default()
+        };
+        let hub = Hub::new(config);
+        let mut manifest = manifest(None, &[("model.safetensors", 7)]);
+        manifest.source = Some("local:C:\\models\\source".to_owned());
+        let error = hub
+            .validate_manifest_network(&manifest, "https://example.invalid/evil", true)
+            .expect_err("local source is rejected");
+        assert!(error.to_string().contains("local filesystem"), "{error}");
+
+        let local_reference = format!("local:{}", root.path().display());
+        hub.validate_manifest_network(&manifest, &local_reference, true)
+            .expect("explicit local references may use local sources");
+    }
+
+    #[test]
+    fn zero_network_timeouts_are_rejected() {
+        let config = HubConfig {
+            download_timeout_secs: 0,
+            ..HubConfig::default()
+        };
+        assert!(config.validate_layout().is_err());
+        let config = HubConfig {
+            connect_timeout_secs: 0,
+            ..HubConfig::default()
+        };
+        assert!(config.validate_layout().is_err());
     }
 }

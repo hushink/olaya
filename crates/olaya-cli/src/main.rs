@@ -1,6 +1,7 @@
 mod config;
 mod registry_seed;
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -68,6 +69,28 @@ struct GlobalArgs {
     /// HTTP/SOCKS proxy for model downloads.
     #[arg(long, env = "OLAYA_PROXY", global = true)]
     proxy: Option<String>,
+    /// Comma-separated hosts that bypass the proxy.
+    #[arg(long, env = "OLAYA_NO_PROXY", global = true)]
+    no_proxy: Option<String>,
+    /// Allow manifests to reference loopback/private network endpoints.
+    #[arg(
+        long,
+        env = "OLAYA_ALLOW_PRIVATE_NETWORK",
+        global = true,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
+    allow_private_network: Option<bool>,
+    /// Download idle/read timeout in seconds.
+    #[arg(long, env = "OLAYA_DOWNLOAD_TIMEOUT_SECS", global = true)]
+    download_timeout_secs: Option<u64>,
+    /// Download TCP connect timeout in seconds.
+    #[arg(long, env = "OLAYA_CONNECT_TIMEOUT_SECS", global = true)]
+    connect_timeout_secs: Option<u64>,
+    /// Retry attempts for failed HTTP downloads.
+    #[arg(long, env = "OLAYA_DOWNLOAD_RETRIES", global = true)]
+    download_retries: Option<u32>,
     /// Refuse every network access.
     #[arg(
         long,
@@ -148,6 +171,26 @@ struct ServeArgs {
     /// Maximum queued requests before backpressure.
     #[arg(long, env = "OLAYA_MAX_QUEUE")]
     max_queue: Option<usize>,
+    /// Cancel one HTTP request (including body reads) after this many seconds.
+    #[arg(long, env = "OLAYA_REQUEST_TIMEOUT_SECS")]
+    request_timeout_secs: Option<u64>,
+    /// Maximum concurrent /api/pull and /api/load operations.
+    #[arg(long, env = "OLAYA_MAX_OPERATIONS")]
+    max_operations: Option<usize>,
+    /// Browser origin allowed to call the API (repeatable or comma-separated).
+    #[arg(
+        long = "cors-origin",
+        env = "OLAYA_CORS_ORIGINS",
+        value_delimiter = ','
+    )]
+    cors_origins: Vec<String>,
+    /// Additional Host header names accepted by the server.
+    #[arg(
+        long = "allowed-host",
+        env = "OLAYA_ALLOWED_HOSTS",
+        value_delimiter = ','
+    )]
+    allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -181,10 +224,21 @@ enum ModelsCommand {
     Show { model: String },
     /// Pull a model into the model directory and the content store.
     Pull { model: String },
-    /// Add a manifest to the runtime catalog.
-    Add { manifest: PathBuf },
-    /// Remove a model from the runtime catalog.
-    Remove { model: String },
+    /// Add a manifest to the filesystem registry.
+    Add {
+        manifest: PathBuf,
+        /// Overwrite an existing manifest with different contents.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove a model's registry manifest, or purge all of its local files.
+    Remove {
+        model: String,
+        /// Also delete materialized weights, store manifests, and the blobs
+        /// that no remaining model references.
+        #[arg(long)]
+        purge: bool,
+    },
     /// Export the catalog (remote bundle or store) into a registry directory.
     Export {
         /// Target directory (defaults to the resolved registry directory).
@@ -257,8 +311,25 @@ impl Settings {
         if let Some(endpoint) = clean(file.hub.modelscope_endpoint.as_deref()) {
             hub.modelscope_endpoint = Some(endpoint.to_owned());
         }
-        if let Some(proxy) = clean(file.hub.proxy.as_deref()) {
-            hub.proxy = Some(proxy.to_owned());
+        if let Some(proxy) = file.hub.proxy.as_deref() {
+            // Preserve an explicit empty value: shaul 1.2.2 treats it as
+            // "bypass ambient proxy environment variables".
+            hub.proxy = Some(proxy.trim().to_owned());
+        }
+        if let Some(no_proxy) = clean(file.hub.no_proxy.as_deref()) {
+            hub.no_proxy = Some(no_proxy.to_owned());
+        }
+        if let Some(allow) = file.hub.allow_private_network {
+            hub.allow_private_network = allow;
+        }
+        if let Some(seconds) = file.hub.download_timeout_secs {
+            hub.download_timeout_secs = seconds;
+        }
+        if let Some(seconds) = file.hub.connect_timeout_secs {
+            hub.connect_timeout_secs = seconds;
+        }
+        if let Some(retries) = file.hub.download_retries {
+            hub.download_retries = retries;
         }
         hub.apply_env();
 
@@ -284,7 +355,22 @@ impl Settings {
             hub.modelscope_endpoint = clean(Some(endpoint)).map(str::to_owned);
         }
         if let Some(proxy) = &global.proxy {
-            hub.proxy = clean(Some(proxy)).map(str::to_owned);
+            hub.proxy = Some(proxy.trim().to_owned());
+        }
+        if let Some(no_proxy) = &global.no_proxy {
+            hub.no_proxy = clean(Some(no_proxy)).map(str::to_owned);
+        }
+        if let Some(allow) = global.allow_private_network {
+            hub.allow_private_network = allow;
+        }
+        if let Some(seconds) = global.download_timeout_secs {
+            hub.download_timeout_secs = seconds;
+        }
+        if let Some(seconds) = global.connect_timeout_secs {
+            hub.connect_timeout_secs = seconds;
+        }
+        if let Some(retries) = global.download_retries {
+            hub.download_retries = retries;
         }
 
         let engine = EngineSettings {
@@ -349,8 +435,8 @@ impl Settings {
                 .unwrap_or(config::DEFAULT_REGISTRY_TIMEOUT_SECS),
             allow_remote: !registry_explicit,
         };
-        if registry.timeout_secs == 0 {
-            anyhow::bail!("[registry].timeout_secs must be at least 1");
+        if registry.timeout_secs == 0 || registry.timeout_secs > 86_400 {
+            anyhow::bail!("[registry].timeout_secs must be between 1 and 86400");
         }
         hub.validate_layout()?;
         validate_disposable_layout(&hub, &registry, loaded.path.as_deref())?;
@@ -380,7 +466,7 @@ impl Settings {
 }
 
 fn clean(value: Option<&str>) -> Option<&str> {
-    value.filter(|value| !value.trim().is_empty())
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn validate_disposable_layout(
@@ -488,15 +574,15 @@ fn load_remote_catalog(
         Some(cache),
         std::time::Duration::from_secs(settings.registry.timeout_secs),
     )?;
+    let url = olaya::hub::redact_url(registry.url());
     let (manifests, source) = registry.load(refresh).with_context(|| {
         format!(
-            "loading the remote catalog from {}; set [registry].url or OLAYA_REGISTRY_URL, \
-             pass --registry-dir, or use --registry-store",
-            registry.url()
+            "loading the remote catalog from {url}; set [registry].url or OLAYA_REGISTRY_URL, \
+             pass --registry-dir, or use --registry-store"
         )
     })?;
     tracing::info!(
-        url = registry.url(),
+        url = %url,
         source = source.as_str(),
         models = manifests.len(),
         "remote catalog loaded"
@@ -508,9 +594,10 @@ fn load_remote_catalog(
 /// default directory is missing or empty and the user did not ask for a
 /// specific registry.
 ///
-/// For the implicit `$OLAYA_HOME/registry` directory, the remote catalog (or
-/// its cache) is authoritative and seeds the local directory on first use, so
-/// later offline runs have a fallback.
+/// For the implicit `$OLAYA_HOME/registry` directory, the remote catalog is
+/// authoritative, but locally added manifests are merged in so
+/// `olaya models add` remains visible without `--registry-dir`. Local entries
+/// that collide with a remote model are ignored (remote wins).
 fn registry_manifests(
     settings: &Settings,
     refresh: bool,
@@ -519,8 +606,8 @@ fn registry_manifests(
     let remote_first =
         settings.registry.allow_remote && *dir == olaya::hub::default_root().join("registry");
     if remote_first {
-        initialize_registry_seed(dir);
         if settings.hub.offline {
+            initialize_registry_seed(dir);
             let manifests = olaya::load_manifests(dir).with_context(|| {
                 format!(
                     "offline mode is enabled and the local registry {} is unavailable",
@@ -531,20 +618,26 @@ fn registry_manifests(
         }
         match load_remote_catalog(settings, refresh) {
             Ok((manifests, source)) => {
+                // Only writes when the directory is still empty, so a local
+                // manifest added before the first remote fetch is preserved.
                 initialize_registry_fallback(dir, &manifests);
-                return Ok((manifests, source));
+                let (merged, local_added) = merge_local_catalog(dir, manifests);
+                return Ok((merged, if local_added { "network+dir" } else { source }));
             }
-            Err(remote_error) => match olaya::load_manifests(dir) {
-                Ok(manifests) => {
-                    tracing::warn!(
-                        dir = %dir.display(),
-                        error = %remote_error,
-                        "remote catalog unavailable; using the local registry fallback"
-                    );
-                    return Ok((manifests, "dir-fallback"));
+            Err(remote_error) => {
+                initialize_registry_seed(dir);
+                match olaya::load_manifests(dir) {
+                    Ok(manifests) => {
+                        tracing::warn!(
+                            dir = %dir.display(),
+                            error = %remote_error,
+                            "remote catalog unavailable; using the local registry fallback"
+                        );
+                        return Ok((manifests, "dir-fallback"));
+                    }
+                    Err(_) => return Err(remote_error),
                 }
-                Err(_) => return Err(remote_error),
-            },
+            }
         }
     }
     match olaya::load_manifests(dir) {
@@ -627,6 +720,46 @@ fn initialize_registry_fallback(dir: &std::path::Path, manifests: &[RepoManifest
     }
 }
 
+/// Merge locally added manifests into a remote catalog. Remote entries win on
+/// name or alias conflicts; local-only models are appended.
+fn merge_local_catalog(dir: &Path, remote: Vec<RepoManifest>) -> (Vec<RepoManifest>, bool) {
+    let local = match olaya::load_manifests(dir) {
+        Ok(manifests) => manifests,
+        Err(_) => return (remote, false),
+    };
+    let mut catalog = olaya::Catalog::new();
+    for manifest in remote {
+        // The remote bundle was validated already.
+        let _ = catalog.insert(manifest);
+    }
+    let mut local_added = false;
+    for manifest in local {
+        match catalog.insert(manifest) {
+            Ok(()) => local_added = true,
+            Err(error) => tracing::debug!(
+                dir = %dir.display(),
+                %error,
+                "local registry entry conflicts with the remote catalog; remote wins"
+            ),
+        }
+    }
+    let mut manifests = catalog.manifests();
+    manifests.sort_by(|left, right| left.name.cmp(&right.name));
+    (manifests, local_added)
+}
+
+fn warn_remote_first_registry(settings: &Settings) {
+    if settings.registry.allow_remote
+        && settings.registry.dir == olaya::hub::default_root().join("registry")
+    {
+        tracing::warn!(
+            dir = %settings.registry.dir.display(),
+            "the implicit registry merges local-only manifests with the remote catalog; \
+             pass --registry-dir to override a remote model or test the local catalog alone"
+        );
+    }
+}
+
 fn registry_is_empty(dir: &std::path::Path) -> bool {
     if !dir.exists() {
         return true;
@@ -695,20 +828,43 @@ fn serve_config(args: &ServeArgs, loaded: &LoadedConfig) -> Result<olaya::serve:
             .or(file.batch_wait_ms)
             .map(std::time::Duration::from_millis)
             .unwrap_or(defaults.max_wait),
+        request_timeout: std::time::Duration::from_secs(
+            args.request_timeout_secs
+                .or(file.request_timeout_secs)
+                .unwrap_or(config::DEFAULT_REQUEST_TIMEOUT_SECS),
+        ),
+        max_operations: args
+            .max_operations
+            .or(file.max_operations)
+            .unwrap_or(config::DEFAULT_MAX_OPERATIONS),
+        cors_origins: if args.cors_origins.is_empty() {
+            normalize_origins(file.cors_origins.clone().unwrap_or_default())
+        } else {
+            normalize_origins(args.cors_origins.clone())
+        },
+        allowed_hosts: if args.allowed_hosts.is_empty() {
+            normalize_origins(file.allowed_hosts.clone().unwrap_or_default())
+        } else {
+            normalize_origins(args.allowed_hosts.clone())
+        },
     };
-    if config.port == 0 {
-        anyhow::bail!("[serve].port must be between 1 and 65535");
-    }
-    if config.max_batch == 0 {
-        anyhow::bail!("[serve].max_batch must be at least 1");
-    }
-    if config.max_queue == 0 {
-        anyhow::bail!("[serve].max_queue must be at least 1");
-    }
-    if config.max_body_bytes == 0 {
-        anyhow::bail!("[serve].max_body_bytes must be at least 1");
-    }
+    config.validate().map_err(anyhow::Error::msg)?;
     Ok(config)
+}
+
+#[cfg(feature = "serve")]
+fn normalize_origins(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    values
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 #[cfg(feature = "serve")]
@@ -725,9 +881,35 @@ async fn serve(args: ServeArgs, loaded: &LoadedConfig, engine: Engine) -> Result
     })
 }
 
+const MAX_STATE_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_QUESTIONS_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_MANIFEST_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+fn read_limited_text(reader: impl Read, limit: u64, label: &str) -> Result<String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {label}"))?;
+    if bytes.len() as u64 > limit {
+        anyhow::bail!("{label} is larger than the {limit}-byte limit");
+    }
+    String::from_utf8(bytes).with_context(|| format!("{label} is not valid UTF-8"))
+}
+
+fn read_limited_file(path: &Path, limit: u64) -> Result<String> {
+    let display = path.display().to_string();
+    let file = std::fs::File::open(path).with_context(|| format!("opening {display}"))?;
+    read_limited_text(file, limit, &display)
+}
+
 fn ask(args: AskArgs, settings: &Settings) -> Result<()> {
     let raw_state = if args.state == "-" {
-        std::io::read_to_string(std::io::stdin()).context("reading state from stdin")?
+        read_limited_text(
+            std::io::stdin().lock(),
+            MAX_STATE_INPUT_BYTES,
+            "state from stdin",
+        )?
     } else {
         args.state
     };
@@ -737,8 +919,7 @@ fn ask(args: AskArgs, settings: &Settings) -> Result<()> {
     };
     let state = State::from_value(state_value).map_err(|error| anyhow::anyhow!("{error}"))?;
 
-    let raw_questions = std::fs::read_to_string(&args.questions)
-        .with_context(|| format!("reading {}", args.questions.display()))?;
+    let raw_questions = read_limited_file(&args.questions, MAX_QUESTIONS_FILE_BYTES)?;
     let questions: indexmap::IndexMap<String, Question> =
         serde_json::from_str(&raw_questions).context("parsing questions")?;
     let questions = Questions::from(questions);
@@ -767,6 +948,159 @@ fn catalog_engine(settings: &Settings) -> Result<Engine> {
 
 fn default_store(settings: &Settings) -> Arc<dyn olaya::ManifestStore> {
     olaya::Hub::new(settings.hub.clone()).store()
+}
+
+/// Delete a model's materialized files, content-store entry, and filesystem
+/// registry manifests, then garbage-collect blobs no remaining model uses.
+///
+/// The remote catalog is never modified; when it is authoritative the model
+/// stays listed and a later pull downloads it again.
+fn purge_model(settings: &Settings, reference: &str) -> Result<serde_json::Value> {
+    let hub = &settings.hub;
+    let store = olaya::Store::open(&hub.store_dir);
+    let stored = store.manifest(reference).ok();
+
+    let canonical = match &stored {
+        Some(stored) => stored.config.name.clone(),
+        None => {
+            // No network here: fall back to manifests already on disk.
+            let manifests = olaya::load_manifests(&settings.registry.dir).unwrap_or_default();
+            manifests
+                .iter()
+                .find(|manifest| {
+                    manifest.name == reference
+                        || manifest.aliases.iter().any(|alias| alias == reference)
+                })
+                .map(|manifest| manifest.name.clone())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "model {reference:?} was not found in {} or {}; nothing to purge",
+                        hub.store_dir.display(),
+                        settings.registry.dir.display()
+                    )
+                })?
+        }
+    };
+    if !is_single_path_component(&canonical) {
+        anyhow::bail!(
+            "refusing to purge model with unsafe name {canonical:?}; the store entry is corrupt"
+        );
+    }
+
+    let model_dir = hub.models_dir.join(&canonical);
+    let (removed_dir, model_files, model_bytes) = remove_model_dir(&model_dir)
+        .with_context(|| format!("purging model directory {}", model_dir.display()))?;
+
+    let store_report = match &stored {
+        Some(_) => Some(
+            store
+                .remove(&canonical)
+                .with_context(|| format!("removing {canonical} from the content store"))?,
+        ),
+        None => None,
+    };
+
+    let registry_report = if settings.registry.store {
+        None
+    } else {
+        Some(olaya::remove_registry_manifest(
+            &settings.registry.dir,
+            &canonical,
+        )?)
+    };
+    let registry_removed = registry_report.as_ref().map_or(0, |report| report.removed);
+    if store_report.is_none() && !removed_dir && registry_removed == 0 {
+        anyhow::bail!(
+            "model {canonical:?} has no model directory, store entry, or registry manifest; \
+             nothing to purge"
+        );
+    }
+
+    if settings.registry.allow_remote
+        && !settings.registry.store
+        && settings.registry.dir == olaya::hub::default_root().join("registry")
+    {
+        tracing::warn!(
+            model = %canonical,
+            "the remote catalog still lists this model; purge removed only local files"
+        );
+    }
+
+    let store_bytes = store_report.as_ref().map_or(0, |report| report.freed_bytes);
+    Ok(json!({
+        "model": canonical,
+        "materialized": {
+            "path": model_dir,
+            "removed": removed_dir,
+            "files": model_files,
+            "bytes": model_bytes,
+        },
+        "store": store_report.as_ref().map(|report| json!({
+            "manifests": report.manifests,
+            "blobs": report.blobs,
+            "bytes": report.freed_bytes,
+            "gc_skipped": report.gc_skipped,
+        })),
+        "registry": registry_report.as_ref().map(|report| json!({
+            "dir": report.dir,
+            "removed": report.removed,
+        })),
+        "reclaimed_bytes": model_bytes + store_bytes,
+    }))
+}
+
+/// Whether `name` is exactly one safe path component, suitable for
+/// `models_dir/<name>`.
+fn is_single_path_component(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+        && olaya::is_safe_relative_path(name)
+}
+
+/// Remove a real directory without following symlinks.
+fn remove_model_dir(dir: &Path) -> Result<(bool, usize, u64)> {
+    let metadata = match std::fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((false, 0, 0)),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", dir.display())),
+    };
+    if !metadata.is_dir() {
+        anyhow::bail!(
+            "refusing to purge {}: it is a symlink or not a directory",
+            dir.display()
+        );
+    }
+    let (files, bytes) = directory_usage(dir)?;
+    std::fs::remove_dir_all(dir).with_context(|| format!("removing {}", dir.display()))?;
+    Ok((true, files, bytes))
+}
+
+fn directory_usage(dir: &Path) -> Result<(usize, u64)> {
+    fn walk(dir: &Path, files: &mut usize, bytes: &mut u64) -> Result<()> {
+        for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+            let entry = entry.with_context(|| format!("reading {}", dir.display()))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("reading {}", path.display()))?;
+            if file_type.is_dir() {
+                walk(&path, files, bytes)?;
+            } else if file_type.is_file() {
+                *files += 1;
+                *bytes += entry
+                    .metadata()
+                    .with_context(|| format!("reading {}", path.display()))?
+                    .len();
+            }
+            // Symlinked entries are not followed and are not counted.
+        }
+        Ok(())
+    }
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    walk(dir, &mut files, &mut bytes)?;
+    Ok((files, bytes))
 }
 
 fn models(args: ModelsArgs, settings: &Settings) -> Result<()> {
@@ -846,18 +1180,54 @@ fn models(args: ModelsArgs, settings: &Settings) -> Result<()> {
                 serde_json::to_string_pretty(&manifest).context("serializing manifest")?
             );
         }
-        ModelsCommand::Add { manifest } => {
-            let engine = catalog_engine(settings)?;
-            let raw = std::fs::read_to_string(&manifest)
-                .with_context(|| format!("reading {}", manifest.display()))?;
+        ModelsCommand::Add { manifest, force } => {
+            if settings.registry.store {
+                anyhow::bail!(
+                    "models add writes a manifest to a filesystem registry; disable \
+                     [registry].store or pass --registry-dir"
+                );
+            }
+            let raw = read_limited_file(&manifest, MAX_MANIFEST_FILE_BYTES)?;
             let manifest: RepoManifest = serde_json::from_str(&raw).context("parsing manifest")?;
-            engine.add_manifest(manifest)?;
-            println!("{}", json!({ "added": true }));
+            let report = olaya::export_registry(&[manifest], &settings.registry.dir, force)?;
+            warn_remote_first_registry(settings);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "dir": report.dir,
+                    "written": report.written,
+                    "unchanged": report.unchanged,
+                }))
+                .context("serializing add report")?
+            );
         }
-        ModelsCommand::Remove { model } => {
-            let engine = catalog_engine(settings)?;
-            let removed = engine.delete(&model)?;
-            println!("{}", json!({ "model": model, "removed": removed }));
+        ModelsCommand::Remove { model, purge } => {
+            if !purge {
+                if settings.registry.store {
+                    anyhow::bail!(
+                        "models remove edits a filesystem registry; disable [registry].store, \
+                         pass --registry-dir, or use --purge to delete store entries and model \
+                         files"
+                    );
+                }
+                let report = olaya::remove_registry_manifest(&settings.registry.dir, &model)?;
+                warn_remote_first_registry(settings);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "dir": report.dir,
+                        "model": report.model,
+                        "removed": report.removed,
+                    }))
+                    .context("serializing remove report")?
+                );
+            } else {
+                let report = purge_model(settings, &model)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).context("serializing purge report")?
+                );
+            }
         }
         ModelsCommand::Export { dir, force } => {
             let dir = dir.unwrap_or_else(|| settings.registry.dir.clone());
@@ -923,7 +1293,7 @@ fn doctor(_args: DoctorArgs, loaded: &LoadedConfig, settings: &Settings) -> Resu
         "registry_source": registry_source,
         "registry_models": registry_models,
         "registry_error": registry_error,
-        "registry_url": settings.registry.url,
+        "registry_url": olaya::hub::redact_url(&settings.registry.url),
         "registry_timeout_secs": settings.registry.timeout_secs,
         "registry_cache": hub
             .cache_dir
@@ -940,9 +1310,14 @@ fn doctor(_args: DoctorArgs, loaded: &LoadedConfig, settings: &Settings) -> Resu
         "store_dir_exists": hub.store_dir.exists(),
         "stored_models": stored_models,
         "offline": hub.offline,
-        "hf_endpoint": hub.hf_endpoint,
-        "modelscope_endpoint": hub.modelscope_endpoint,
-        "proxy": hub.proxy,
+        "hf_endpoint": hub.hf_endpoint.as_deref().map(olaya::hub::redact_url),
+        "modelscope_endpoint": hub.modelscope_endpoint.as_deref().map(olaya::hub::redact_url),
+        "proxy": hub.proxy.as_deref().map(olaya::hub::redact_url),
+        "no_proxy": hub.no_proxy,
+        "allow_private_network": hub.allow_private_network,
+        "download_timeout_secs": hub.download_timeout_secs,
+        "connect_timeout_secs": hub.connect_timeout_secs,
+        "download_retries": hub.download_retries,
     });
     #[cfg(feature = "serve")]
     {
@@ -960,6 +1335,10 @@ fn doctor(_args: DoctorArgs, loaded: &LoadedConfig, settings: &Settings) -> Resu
             "batch_wait_ms": serve.max_wait.as_millis() as u64,
             "max_body_bytes": serve.max_body_bytes,
             "max_queue": serve.max_queue,
+            "request_timeout_secs": serve.request_timeout.as_secs(),
+            "max_operations": serve.max_operations,
+            "cors_origins": serve.cors_origins,
+            "allowed_hosts": serve.allowed_hosts,
         });
     }
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -993,6 +1372,11 @@ mod tests {
             hf_endpoint: None,
             modelscope_endpoint: None,
             proxy: None,
+            no_proxy: None,
+            allow_private_network: None,
+            download_timeout_secs: None,
+            connect_timeout_secs: None,
+            download_retries: None,
             offline: None,
             device: None,
             dtype: None,
@@ -1019,6 +1403,14 @@ mod tests {
                     timeout_secs: Some(5),
                     ..Default::default()
                 },
+                hub: config::HubConfigFile {
+                    no_proxy: Some("file.example".to_owned()),
+                    allow_private_network: Some(false),
+                    download_timeout_secs: Some(10),
+                    connect_timeout_secs: Some(5),
+                    download_retries: Some(2),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             path: None,
@@ -1031,6 +1423,11 @@ mod tests {
         global.registry_store = Some(false);
         global.registry_url = Some("https://cli.example/catalog.json".to_owned());
         global.registry_timeout_secs = Some(9);
+        global.no_proxy = Some("cli.example".to_owned());
+        global.allow_private_network = Some(true);
+        global.download_timeout_secs = Some(20);
+        global.connect_timeout_secs = Some(7);
+        global.download_retries = Some(3);
 
         let settings = Settings::load(&loaded, &global).expect("settings resolve");
         assert_eq!(settings.engine.device, "cuda");
@@ -1041,6 +1438,11 @@ mod tests {
         assert!(!settings.registry.store);
         assert_eq!(settings.registry.url, "https://cli.example/catalog.json");
         assert_eq!(settings.registry.timeout_secs, 9);
+        assert_eq!(settings.hub.no_proxy.as_deref(), Some("cli.example"));
+        assert!(settings.hub.allow_private_network);
+        assert_eq!(settings.hub.download_timeout_secs, 20);
+        assert_eq!(settings.hub.connect_timeout_secs, 7);
+        assert_eq!(settings.hub.download_retries, 3);
     }
 
     #[cfg(windows)]
@@ -1090,6 +1492,20 @@ mod tests {
         let error =
             Settings::load(&loaded, &empty_global()).expect_err("config overlap is rejected");
         assert!(error.to_string().contains("configuration file"));
+    }
+
+    #[test]
+    fn purge_path_guard_rejects_traversal_and_multiple_components() {
+        assert!(is_single_path_component("laya"));
+        assert!(is_single_path_component("laya-multilingual"));
+        assert!(!is_single_path_component(""));
+        assert!(!is_single_path_component("."));
+        assert!(!is_single_path_component(".."));
+        assert!(!is_single_path_component("../escape"));
+        assert!(!is_single_path_component("a/b"));
+        assert!(!is_single_path_component("a\\b"));
+        assert!(!is_single_path_component("C:foo"));
+        assert!(!is_single_path_component("name."));
     }
 
     #[test]
@@ -1145,6 +1561,44 @@ mod tests {
         assert_eq!(source, "dir");
         assert_eq!(manifests.len(), registry_seed::MANIFESTS.len());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn cors_origins_are_normalized_and_cli_overrides_the_file() {
+        let loaded = LoadedConfig {
+            file: config::FileConfig {
+                serve: config::ServeConfigFile {
+                    cors_origins: Some(vec!["https://file.example".to_owned()]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            path: None,
+            base: PathBuf::new(),
+        };
+        let args = ServeArgs {
+            cors_origins: vec![" https://a.example , https://b.example ".to_owned()],
+            ..ServeArgs::default()
+        };
+        let config = serve_config(&args, &loaded).expect("serve config");
+        assert_eq!(
+            config.cors_origins,
+            vec![
+                "https://a.example".to_owned(),
+                "https://b.example".to_owned()
+            ]
+        );
+
+        let config = serve_config(&ServeArgs::default(), &loaded).expect("file origins");
+        assert_eq!(config.cors_origins, vec!["https://file.example".to_owned()]);
+
+        let cleared = ServeArgs {
+            cors_origins: vec![String::new()],
+            ..ServeArgs::default()
+        };
+        let config = serve_config(&cleared, &loaded).expect("cleared origins");
+        assert!(config.cors_origins.is_empty());
     }
 
     #[cfg(feature = "serve")]
