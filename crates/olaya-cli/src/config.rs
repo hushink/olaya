@@ -26,10 +26,14 @@ pub const DEFAULT_MAX_BATCH: usize = 32;
 pub const DEFAULT_BATCH_WAIT_MS: u64 = 2;
 pub const DEFAULT_MAX_BODY_BYTES: usize = olaya::MAX_BODY_BYTES;
 pub const DEFAULT_MAX_QUEUE: usize = 64;
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
+pub const DEFAULT_MAX_OPERATIONS: usize = 4;
 
 /// Built-in catalog defaults.
 pub const DEFAULT_REGISTRY_STORE: bool = false;
 pub const DEFAULT_REGISTRY_TIMEOUT_SECS: u64 = olaya::DEFAULT_REGISTRY_TIMEOUT_SECS;
+/// Maximum accepted configuration file size.
+const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Template written to `$OLAYA_HOME/config.toml` on first use.
 ///
@@ -63,6 +67,14 @@ max_batch = {max_batch}
 batch_wait_ms = {batch_wait_ms}
 max_body_bytes = {max_body_bytes}
 max_queue = {max_queue}
+# Cancel one HTTP request (including a slow body) after this many seconds.
+request_timeout_secs = {request_timeout_secs}
+# Concurrent /api/pull and /api/load operations.
+max_operations = {max_operations}
+# Browser origins allowed to call the API. Empty disables CORS (recommended).
+# cors_origins = ["https://app.example.com"]
+# Extra Host names accepted by the server (loopback binds default to loopback names).
+# allowed_hosts = ["olaya.internal"]
 
 [hub]
 # All paths default under $OLAYA_HOME; relative paths resolve against this file.
@@ -75,7 +87,15 @@ max_queue = {max_queue}
 # Hugging Face downloads use the mirror by default.
 # hf_endpoint = "https://hf-mirror.com"
 # modelscope_endpoint = "https://www.modelscope.cn"
+# HTTP/SOCKS proxy and the hosts that bypass it.
 # proxy = "http://127.0.0.1:7890"
+# no_proxy = "localhost,127.0.0.1"
+# Allow manifests to reference loopback/private network endpoints.
+# allow_private_network = false
+# Idle/read timeout (seconds), connect timeout (seconds), and HTTP retries.
+download_timeout_secs = {download_timeout_secs}
+connect_timeout_secs = {connect_timeout_secs}
+download_retries = {download_retries}
 
 [registry]
 # Use a local manifest directory instead of the release catalog.
@@ -97,6 +117,11 @@ timeout_secs = {registry_timeout_secs}
         batch_wait_ms = DEFAULT_BATCH_WAIT_MS,
         max_body_bytes = DEFAULT_MAX_BODY_BYTES,
         max_queue = DEFAULT_MAX_QUEUE,
+        request_timeout_secs = DEFAULT_REQUEST_TIMEOUT_SECS,
+        max_operations = DEFAULT_MAX_OPERATIONS,
+        download_timeout_secs = olaya::hub::DEFAULT_DOWNLOAD_TIMEOUT_SECS,
+        connect_timeout_secs = olaya::hub::DEFAULT_CONNECT_TIMEOUT_SECS,
+        download_retries = olaya::hub::DEFAULT_DOWNLOAD_RETRIES,
         registry_url = olaya::DEFAULT_REGISTRY_URL,
         registry_timeout_secs = DEFAULT_REGISTRY_TIMEOUT_SECS
     )
@@ -136,6 +161,11 @@ pub struct HubConfigFile {
     pub hf_endpoint: Option<String>,
     pub modelscope_endpoint: Option<String>,
     pub proxy: Option<String>,
+    pub no_proxy: Option<String>,
+    pub allow_private_network: Option<bool>,
+    pub download_timeout_secs: Option<u64>,
+    pub connect_timeout_secs: Option<u64>,
+    pub download_retries: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -160,6 +190,10 @@ pub struct ServeConfigFile {
     pub batch_wait_ms: Option<u64>,
     pub max_body_bytes: Option<usize>,
     pub max_queue: Option<usize>,
+    pub request_timeout_secs: Option<u64>,
+    pub max_operations: Option<usize>,
+    pub cors_origins: Option<Vec<String>>,
+    pub allowed_hosts: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -214,11 +248,15 @@ impl LoadedConfig {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // The file can contain OLAYA_API_KEY or proxy credentials.
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(path) {
             Ok(mut file) => file
                 .write_all(default_config_text().as_bytes())
                 .with_context(|| format!("writing configuration {}", path.display())),
@@ -230,8 +268,27 @@ impl LoadedConfig {
     }
 
     fn read(path: &Path) -> Result<Self> {
+        let metadata = std::fs::metadata(path)
+            .with_context(|| format!("reading configuration {}", path.display()))?;
+        if metadata.len() > MAX_CONFIG_BYTES {
+            anyhow::bail!(
+                "configuration {} is larger than the {MAX_CONFIG_BYTES}-byte limit",
+                path.display()
+            );
+        }
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading configuration {}", path.display()))?;
+        #[cfg(unix)]
+        if let Ok(metadata) = std::fs::metadata(path) {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                tracing::warn!(
+                    path = %path.display(),
+                    "configuration file is readable by other users and may contain credentials; \
+                     chmod 600 it"
+                );
+            }
+        }
         let file: FileConfig = toml::from_str(&text)
             .with_context(|| format!("parsing configuration {}", path.display()))?;
         let base = path
@@ -300,6 +357,10 @@ timeout_secs = 12
 [hub]
 models_dir = "models"
 offline = true
+no_proxy = "localhost,127.0.0.1"
+download_timeout_secs = 90
+connect_timeout_secs = 20
+download_retries = 7
 
 [engine]
 device = "cuda"
@@ -314,6 +375,7 @@ port = 11436
 max_batch = 8
 max_body_bytes = 4096
 max_queue = 16
+cors_origins = ["https://app.example.com"]
 "#,
         )
         .expect("config parses");
@@ -324,7 +386,15 @@ max_queue = 16
         assert_eq!(config.engine.max_loaded, Some(2));
         assert_eq!(config.serve.port, Some(11436));
         assert_eq!(config.serve.max_queue, Some(16));
+        assert_eq!(
+            config.serve.cors_origins.as_deref(),
+            Some(["https://app.example.com".to_owned()].as_slice())
+        );
         assert_eq!(config.hub.offline, Some(true));
+        assert_eq!(config.hub.no_proxy.as_deref(), Some("localhost,127.0.0.1"));
+        assert_eq!(config.hub.download_timeout_secs, Some(90));
+        assert_eq!(config.hub.connect_timeout_secs, Some(20));
+        assert_eq!(config.hub.download_retries, Some(7));
     }
 
     #[test]
@@ -361,8 +431,25 @@ max_queue = 16
         assert_eq!(config.serve.max_body_bytes, Some(DEFAULT_MAX_BODY_BYTES));
         assert_eq!(config.serve.max_queue, Some(DEFAULT_MAX_QUEUE));
         assert_eq!(
+            config.serve.request_timeout_secs,
+            Some(DEFAULT_REQUEST_TIMEOUT_SECS)
+        );
+        assert_eq!(config.serve.max_operations, Some(DEFAULT_MAX_OPERATIONS));
+        assert_eq!(
             config.registry.timeout_secs,
             Some(DEFAULT_REGISTRY_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            config.hub.download_timeout_secs,
+            Some(olaya::hub::DEFAULT_DOWNLOAD_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            config.hub.connect_timeout_secs,
+            Some(olaya::hub::DEFAULT_CONNECT_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            config.hub.download_retries,
+            Some(olaya::hub::DEFAULT_DOWNLOAD_RETRIES)
         );
         assert!(!text.contains("workspace"));
         assert!(!text.contains("RustRover"));
@@ -380,5 +467,11 @@ max_queue = 16
         assert_eq!(DEFAULT_MAX_BODY_BYTES, serve.max_body_bytes);
         assert_eq!(DEFAULT_MAX_QUEUE, serve.max_queue);
         assert_eq!(Duration::from_millis(DEFAULT_BATCH_WAIT_MS), serve.max_wait);
+        assert_eq!(
+            Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS),
+            serve.request_timeout
+        );
+        assert_eq!(DEFAULT_MAX_OPERATIONS, serve.max_operations);
+        assert!(serve.cors_origins.is_empty());
     }
 }
