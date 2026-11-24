@@ -167,6 +167,11 @@ manifest 规定的目录结构，再加载。`Store::materialize` 目前是 `std
 - `models pull` 会同时下载、导入 store，并保留 `models_dir` 的可读文件；如果 store 已有匹配内容，
   则直接从 store 物化，不重新下载。
 - `models_dir` 是可丢弃的投影：删除它不会丢模型，下一次 `load` 会从 store 重建；store 才是权威内容。
+- 需要真正回收磁盘时，使用 `olaya models remove <name> --purge` 或 `Store::remove`：删除物化
+  目录、该模型的 store manifest（含 alias 与按 digest 固定的副本）、文件系统 registry manifest，
+  并回收不再被任何剩余 manifest 引用的 blob。若仍有 manifest 无法读取，GC 会跳过并返回
+  `gc_skipped`，避免误删。`DELETE /api/delete` 不同，它只把模型从运行中进程的 catalog 移除，
+  不删除磁盘内容。
 - `cache_dir`/`tmp_dir` 同样可丢弃：删除只会丢 resume 状态、catalog 缓存或 manifest staging；
   已下载模型和 blob 不受影响。`HubConfig::ensure_dirs`/`Hub::pull` 会按需重建它们，并拒绝与
   `models_dir`/`store_dir` 重叠的布局。
@@ -229,8 +234,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`ServeConfig` 的其余字段（`allow_unauthenticated`、`max_body_bytes`、`max_queue`）都来自
+`ServeConfig` 的其余字段（`allow_unauthenticated`、`max_body_bytes`、`max_queue`、
+`request_timeout`、`max_operations`、`cors_origins`、`allowed_hosts`）都来自
 `ServeConfig::default()` 或显式设置；CLI 的 `[serve]` 配置最终映射到同一个结构。
+`request_timeout` 默认 600 秒（`Duration::ZERO` 关闭），并覆盖慢速 body 读取；
+`max_operations` 限制并发 pull/load。`cors_origins` 默认为空，表示不发送任何 CORS 响应头；只有
+显式列出的浏览器 Origin 才会被放行。`allowed_hosts` 为空时，loopback 绑定只接受 loopback Host
+名，以阻止 DNS rebinding。
 
 > 引擎构建（registry/catalog 读取和 Hub 客户端）是同步的，可能访问网络或文件系统。在 `tokio`
 > 应用中应在进入 async 任务之前构建，或放进 `tokio::task::spawn_blocking`；不要在 async 上下文里

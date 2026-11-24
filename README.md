@@ -146,7 +146,12 @@ Useful server options:
 | `--batch-wait-ms` | `2` | Collection window for the first request |
 | `--max-body-bytes` | `8388608` | Maximum HTTP request body |
 | `--max-queue` | `64` | Maximum queued requests before backpressure |
+| `--request-timeout-secs` | `600` | Total request timeout; `0` disables |
+| `--max-operations` | `4` | Concurrent pull/load operations |
 | `--api-key` | `OLAYA_API_KEY` | Bearer token for every route except `/health` |
+| `--allow-unauthenticated` | off | Permit a non-loopback bind without a key |
+| `--cors-origin` | none | Browser Origin allowed to call the API (repeatable) |
+| `--allowed-host` | loopback names | Extra `Host` names accepted (DNS-rebinding guard) |
 
 > [!WARNING]
 > The server binds to loopback by default. A non-loopback bind requires `--api-key` (or an explicit
@@ -179,6 +184,12 @@ max_batch = 32
 batch_wait_ms = 2
 max_body_bytes = 8388608
 max_queue = 64
+request_timeout_secs = 600
+max_operations = 4
+# Browser origins allowed to call the API; empty disables CORS.
+# cors_origins = ["https://app.example.com"]
+# Extra Host names accepted by the server.
+# allowed_hosts = ["olaya.internal"]
 
 [hub]
 # models_dir = "models"
@@ -189,6 +200,11 @@ max_queue = 64
 hf_endpoint = "https://hf-mirror.com"
 # modelscope_endpoint = "https://www.modelscope.cn"
 # proxy = "http://127.0.0.1:7890"
+# no_proxy = "localhost,127.0.0.1"
+# allow_private_network = false
+download_timeout_secs = 60
+connect_timeout_secs = 15
+download_retries = 5
 
 [registry]
 # dir = "./registry"
@@ -422,6 +438,11 @@ directory overlaps an authoritative directory. `Store::materialize` currently co
 same content occupies both locations; hardlink/reflink or direct blob loaders are possible future
 space optimizations.
 
+To reclaim disk space, use `olaya models remove <name> --purge` or the library-level `Store::remove`:
+they delete the materialized directory, the model's store and registry manifests, and blobs that no
+remaining model references. `DELETE /api/delete` is intentionally different: it only removes the
+model from a running server's in-memory catalog and keeps every file.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `OLAYA_HOME` | `~/.olaya` | Base directory for defaults |
@@ -468,7 +489,7 @@ The server exposes the TypeSafe System One API and a small model-management API:
 | `POST` | `/api/load` | Load a model |
 | `POST` | `/api/unload` | Unload a model |
 | `POST` | `/api/pull` | Pull a model |
-| `DELETE` | `/api/delete` | Delete a model |
+| `DELETE` | `/api/delete` | Remove a model from the running server's in-memory catalog (files and blobs are kept; use `olaya models remove --purge` to reclaim disk) |
 
 `POST /v1/systemone` accepts JSON or `multipart/form-data` for images. Image and box requests require
 `TypeSafe-Danger-Zone-Images: true`; long-context requests can send
