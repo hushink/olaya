@@ -19,7 +19,7 @@ doc = false
 [dependencies]
 # The CLI always needs the hosted-catalog client; model families, the Hub, and
 # the HTTP server remain selectable features.
-olaya = { version = "0.1.8", path = "../olaya", default-features = false, features = ["remote"] }
+olaya = { version = "0.2.0", path = "../olaya", default-features = false, features = ["remote"] }
 clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
