@@ -355,7 +355,10 @@ impl Calibration {
         };
 
         let convert = |value: &Value| match value.as_f64() {
-            Some(value) if value.is_finite() => match mode {
+            // A fitted temperature must be positive: zero or negative values
+            // would make `softmax` divide by zero (or invert the distribution),
+            // producing NaN answers for a malformed checkpoint.
+            Some(value) if value.is_finite() && value > 0.0 => match mode {
                 CalibrationMode::Raw => value,
                 CalibrationMode::Clamp | CalibrationMode::OnnxBundle => {
                     value.clamp(range[0], range[1])
@@ -418,11 +421,48 @@ impl Calibration {
     }
 }
 
-pub fn softmax(z: impl Iterator<Item = f64> + Clone) -> Vec<f64> {
-    let max = z.clone().fold(f64::NEG_INFINITY, f64::max);
-    let e: Vec<f64> = z.map(|v| (v - max).exp()).collect();
+pub fn softmax(z: impl Iterator<Item = f64>) -> Vec<f64> {
+    let values = z.collect::<Vec<_>>();
+    if values.is_empty() {
+        return Vec::new();
+    }
+    let uniform = || vec![1.0 / values.len() as f64; values.len()];
+    // A malformed model can emit NaN or infinite logits. Keep the answer
+    // serializable and meaningful instead of letting NaN reach JSON.
+    let positive_infinities = values
+        .iter()
+        .filter(|value| **value == f64::INFINITY)
+        .count();
+    if positive_infinities > 0 {
+        let share = 1.0 / positive_infinities as f64;
+        return values
+            .iter()
+            .map(|value| if *value == f64::INFINITY { share } else { 0.0 })
+            .collect();
+    }
+    let max = values
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !max.is_finite() {
+        return uniform();
+    }
+    let e = values
+        .iter()
+        .map(|value| {
+            if value.is_finite() {
+                (value - max).exp()
+            } else {
+                0.0
+            }
+        })
+        .collect::<Vec<_>>();
     let sum: f64 = e.iter().sum();
-    e.into_iter().map(|v| v / sum).collect()
+    if !sum.is_finite() || sum <= 0.0 {
+        return uniform();
+    }
+    e.into_iter().map(|value| value / sum).collect()
 }
 
 /// TypeSafe's normalized top probability `(K * max(p) - 1) / (K - 1)`.
@@ -434,20 +474,36 @@ pub fn typesafe_confidence(probabilities: &IndexMap<String, f64>) -> f64 {
     let max = probabilities
         .values()
         .copied()
+        .filter(|value| value.is_finite())
         .fold(f64::NEG_INFINITY, f64::max);
-    ((count as f64 * max - 1.0) / (count as f64 - 1.0)).clamp(0.0, 1.0)
+    if !max.is_finite() {
+        return 0.0;
+    }
+    let confidence = (count as f64 * max - 1.0) / (count as f64 - 1.0);
+    if confidence.is_finite() {
+        confidence.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 /// Build a choice answer from option labels and calibrated probabilities.
+///
+/// A malformed model whose head size does not match the question produces an
+/// answer over the common prefix instead of panicking.
 pub fn choice_answer(labels: &[String], probabilities: &[f64]) -> Answer {
-    let best = argmax(probabilities);
     let probabilities = labels
         .iter()
         .zip(probabilities)
         .map(|(label, probability)| (label.clone(), *probability))
         .collect::<IndexMap<_, _>>();
+    let best = argmax(&probabilities.values().copied().collect::<Vec<_>>());
+    let choice = probabilities
+        .get_index(best)
+        .map(|(label, _)| label.clone())
+        .unwrap_or_default();
     Answer::Choice(ChoiceAnswer {
-        choice: labels[best].clone(),
+        choice,
         confidence: typesafe_confidence(&probabilities),
         probabilities,
     })
@@ -456,7 +512,17 @@ pub fn choice_answer(labels: &[String], probabilities: &[f64]) -> Answer {
 /// Build a score answer from ordered levels and calibrated probabilities.
 pub fn score_answer(legend: &[Content], probabilities: &[f64]) -> Answer {
     let probabilities = (0..legend.len().min(probabilities.len()))
-        .map(|index| (index.to_string(), probabilities[index]))
+        .map(|index| {
+            let probability = probabilities[index];
+            (
+                index.to_string(),
+                if probability.is_finite() {
+                    probability
+                } else {
+                    0.0
+                },
+            )
+        })
         .collect::<IndexMap<_, _>>();
     let score = probabilities
         .values()
@@ -478,8 +544,13 @@ pub fn score_answer(legend: &[Content], probabilities: &[f64]) -> Answer {
 
 /// Build a noul answer from `[false, true]` calibrated probabilities.
 pub fn noul_answer(probabilities: &[f64]) -> Answer {
+    let value = probabilities.get(1).copied().unwrap_or(0.5);
     Answer::Noul(NoulAnswer {
-        noul: probabilities.get(1).copied().unwrap_or(0.5).clamp(0.0, 1.0),
+        noul: if value.is_finite() {
+            value.clamp(0.0, 1.0)
+        } else {
+            0.5
+        },
     })
 }
 
@@ -511,6 +582,22 @@ pub fn answer_from_logits(
     }
     if logits.is_empty() {
         return Err(DecisionError::invalid("empty option logits"));
+    }
+    // A model head whose size does not match the question would otherwise
+    // panic (choice) or silently drop options (score).
+    let expected = match qtype {
+        QType::Choice => Some(labels.len()),
+        QType::Score => Some(legend.len()),
+        QType::Noul | QType::Box => None,
+    };
+    if let Some(expected) = expected
+        && expected != logits.len()
+    {
+        return Err(DecisionError::invalid(format!(
+            "{:?} question has {expected} options but the model returned {} logits",
+            qtype,
+            logits.len()
+        )));
     }
     let probabilities = calibration.probabilities(qtype, logits, state_tokens);
     Ok(match qtype {

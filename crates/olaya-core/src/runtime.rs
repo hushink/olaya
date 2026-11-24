@@ -35,9 +35,11 @@ pub trait DecisionRuntime: Send + Sync {
             .collect()
     }
 
-    /// Run one request with the assets the server received (inline base64 or
-    /// multipart parts). Runtimes that do not read images can keep the default,
-    /// which drops them and calls [`DecisionRuntime::predict`].
+    /// Run one request with the assets the server received. Inline assets
+    /// already contain base64 data; the HTTP server also normalizes multipart
+    /// image parts to inline base64 before calling this method. Runtimes that
+    /// do not read images can keep the default, which drops them and calls
+    /// [`DecisionRuntime::predict`].
     fn predict_with_assets(
         &self,
         model: &str,
@@ -80,7 +82,13 @@ pub trait DecisionRuntime: Send + Sync {
         })
     }
 
-    /// Remove a model from the local catalog and delete its blobs.
+    /// Remove a model from the local catalog.
+    ///
+    /// Implementations are not required to delete materialized files or
+    /// content-store blobs. A running server keeps its catalog in memory, so
+    /// this does not survive a restart and never reclaims disk space; use the
+    /// content store's maintenance API (for example `olaya::Store::remove`)
+    /// or the CLI purge command for that.
     fn delete(&self, name: &str) -> Result<bool, RuntimeError> {
         let _ = name;
         Ok(false)
