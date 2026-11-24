@@ -9,11 +9,14 @@
 //! touching the network; `Export` and explicit refreshes fetch the current
 //! bundle and fall back to the cache when the network is unavailable.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use olaya_core::{CatalogBundle, ManifestRegistry, RegistryError, RepoManifest};
 use reqwest::blocking::Client;
+
+use crate::hub::redact_url;
 
 /// Environment variable that overrides the catalog URL.
 pub const REGISTRY_URL_ENV: &str = "OLAYA_REGISTRY_URL";
@@ -26,6 +29,9 @@ pub const DEFAULT_REGISTRY_URL: &str =
 pub const CATALOG_CACHE_FILE: &str = "registry-catalog.json";
 /// Default HTTP timeout for fetching the catalog bundle.
 pub const DEFAULT_REGISTRY_TIMEOUT_SECS: u64 = 30;
+/// Maximum accepted catalog bundle size. A catalog is a small JSON document;
+/// refusing larger bodies prevents a hostile mirror from exhausting memory.
+pub const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Where a catalog load came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +73,8 @@ impl RemoteRegistry {
         cache: Option<PathBuf>,
         timeout: Duration,
     ) -> Result<Self, RegistryError> {
+        let url = url.into();
+        validate_catalog_url(&url)?;
         let client = Client::builder()
             .timeout(timeout)
             .user_agent(concat!("olaya/", env!("CARGO_PKG_VERSION")))
@@ -74,11 +82,7 @@ impl RemoteRegistry {
             .map_err(|error| {
                 RegistryError::Unavailable(format!("building the HTTP client: {error}"))
             })?;
-        Ok(Self {
-            url: url.into(),
-            cache,
-            client,
-        })
+        Ok(Self { url, cache, client })
     }
 
     /// Use `OLAYA_REGISTRY_URL` (or [`DEFAULT_REGISTRY_URL`]) and cache under
@@ -128,7 +132,7 @@ impl RemoteRegistry {
                     && let Ok(manifests) = self.read_cache(cache)
                 {
                     tracing::warn!(
-                        url = %self.url,
+                        url = %redact_url(&self.url),
                         %error,
                         "catalog refresh failed; using the cached catalog"
                     );
@@ -140,23 +144,37 @@ impl RemoteRegistry {
     }
 
     fn fetch(&self) -> Result<Vec<RepoManifest>, RegistryError> {
-        tracing::info!(url = %self.url, "fetching model catalog");
+        let url = redact_url(&self.url);
+        tracing::info!(%url, "fetching model catalog");
         let response = self.client.get(&self.url).send().map_err(|error| {
-            RegistryError::Unavailable(format!("fetching {}: {error}", self.url))
+            RegistryError::Unavailable(format!("fetching {url}: {}", error.without_url()))
         })?;
         let status = response.status();
         if !status.is_success() {
             return Err(RegistryError::Unavailable(format!(
-                "fetching {} returned HTTP {status}",
-                self.url
+                "fetching {url} returned HTTP {status}"
             )));
         }
-        let bytes = response.bytes().map_err(|error| {
-            RegistryError::Unavailable(format!("reading {}: {error}", self.url))
-        })?;
-        let bundle: CatalogBundle = serde_json::from_slice(&bytes).map_err(|source| {
-            RegistryError::Unavailable(format!("parsing {}: {source}", self.url))
-        })?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_CATALOG_BYTES)
+        {
+            return Err(RegistryError::Unavailable(format!(
+                "catalog at {url} is larger than the {MAX_CATALOG_BYTES}-byte limit"
+            )));
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(MAX_CATALOG_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| RegistryError::Unavailable(format!("reading {url}: {error}")))?;
+        if bytes.len() as u64 > MAX_CATALOG_BYTES {
+            return Err(RegistryError::Unavailable(format!(
+                "catalog at {url} is larger than the {MAX_CATALOG_BYTES}-byte limit"
+            )));
+        }
+        let bundle: CatalogBundle = serde_json::from_slice(&bytes)
+            .map_err(|source| RegistryError::Unavailable(format!("parsing {url}: {source}")))?;
         bundle.validate()?;
         let mut manifests = bundle.manifests;
         manifests.sort_by(|left, right| left.name.cmp(&right.name));
@@ -164,6 +182,16 @@ impl RemoteRegistry {
     }
 
     fn read_cache(&self, path: &Path) -> Result<Vec<RepoManifest>, RegistryError> {
+        let metadata = std::fs::metadata(path).map_err(|source| RegistryError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if metadata.len() > MAX_CATALOG_BYTES {
+            return Err(RegistryError::Unavailable(format!(
+                "cached catalog {} is larger than the {MAX_CATALOG_BYTES}-byte limit",
+                path.display()
+            )));
+        }
         let bytes = std::fs::read(path).map_err(|source| RegistryError::Io {
             path: path.to_path_buf(),
             source,
@@ -194,10 +222,76 @@ impl RemoteRegistry {
             tracing::warn!(path = %parent.display(), %error, "creating the catalog cache directory");
             return;
         }
-        if let Err(error) = std::fs::write(path, serialized) {
+        // Write through a sibling temp file and rename so a crash or a
+        // concurrent reader never sees a half-written catalog. The cache may
+        // contain a private mirror URL/token, so keep it owner-only on Unix.
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "catalog.json".to_owned());
+        let temp = path.with_file_name(format!(
+            ".{file_name}.tmp-{}-{}",
+            std::process::id(),
+            nanos()
+        ));
+        let write = || -> std::io::Result<()> {
+            let mut options = std::fs::OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temp)?;
+            file.write_all(&serialized)?;
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(&temp, path)
+        };
+        if let Err(error) = write() {
+            let _ = std::fs::remove_file(&temp);
             tracing::warn!(path = %path.display(), %error, "writing the catalog cache");
+        } else {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            }
         }
     }
+}
+
+fn validate_catalog_url(url: &str) -> Result<(), RegistryError> {
+    if url.is_empty() || url.chars().any(char::is_control) {
+        return Err(RegistryError::Unavailable(
+            "registry URL must not be empty or contain control characters".to_owned(),
+        ));
+    }
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Err(RegistryError::Unavailable(format!(
+            "registry URL must be absolute and use http or https: {}",
+            redact_url(url)
+        )));
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return Err(RegistryError::Unavailable(format!(
+            "registry URL must use http or https, not {scheme}"
+        )));
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') {
+        return Err(RegistryError::Unavailable(
+            "registry URL must name a host and must not contain credentials".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
 }
 
 impl ManifestRegistry for RemoteRegistry {

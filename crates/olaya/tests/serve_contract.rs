@@ -690,3 +690,104 @@ async fn concurrent_requests_share_a_batch() {
         "expected a shared batch, saw {batches:?}"
     );
 }
+
+#[tokio::test]
+async fn cors_headers_are_opt_in_and_do_not_bypass_auth() {
+    let origin = "https://app.example.com";
+    let (router, _) = build(None);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .header("origin", origin)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none(),
+        "CORS must be disabled by default"
+    );
+
+    let (router, _) = build_with(ServeConfig {
+        api_key: Some("secret".to_owned()),
+        cors_origins: vec![origin.to_owned()],
+        ..ServeConfig::default()
+    });
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/v1/systemone")
+                .header("origin", origin)
+                .header("access-control-request-method", "POST")
+                .header("access-control-request-headers", "authorization")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|value| value.to_str().ok()),
+        Some(origin)
+    );
+}
+
+#[tokio::test]
+async fn host_header_guard_blocks_dns_rebinding() {
+    let (router, _) = build(None);
+    let request = |host: Option<&str>| {
+        let mut builder = Request::builder().uri("/health");
+        if let Some(host) = host {
+            builder = builder.header("host", host);
+        }
+        builder.body(Body::empty()).expect("request")
+    };
+
+    let response = router
+        .clone()
+        .oneshot(request(Some("localhost:11435")))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = router
+        .clone()
+        .oneshot(request(Some("evil.example:11435")))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    // HTTP clients without a Host header keep working (HTTP/2 uses :authority).
+    let response = router
+        .clone()
+        .oneshot(request(None))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (router, _) = build_with(ServeConfig {
+        allowed_hosts: vec!["olaya.internal".to_owned()],
+        ..ServeConfig::default()
+    });
+    let response = router
+        .clone()
+        .oneshot(request(Some("olaya.internal:11435")))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = router
+        .clone()
+        .oneshot(request(Some("localhost:11435")))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

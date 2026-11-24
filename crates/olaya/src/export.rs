@@ -16,6 +16,17 @@ pub struct ExportReport {
     pub unchanged: usize,
 }
 
+/// Result of [`remove_registry_manifest`].
+#[derive(Clone, Debug, Serialize)]
+pub struct RemovalReport {
+    /// Directory that was searched.
+    pub dir: PathBuf,
+    /// Canonical name of the removed model, when it was found.
+    pub model: Option<String>,
+    /// Manifest files removed.
+    pub removed: usize,
+}
+
 /// Write `manifests` under `dir` as
 /// `v1/library/<family>/manifests/<name>.json`.
 ///
@@ -69,16 +80,143 @@ pub fn export_registry(
                 source,
             })?;
         }
-        std::fs::write(target, bytes).map_err(|source| RegistryError::Io {
-            path: target.clone(),
-            source,
-        })?;
+        write_atomic(target, bytes)?;
     }
     Ok(ExportReport {
         dir: dir.to_path_buf(),
         written: pending.len(),
         unchanged,
     })
+}
+
+/// Remove the manifest files that describe a model from a filesystem registry.
+///
+/// Only JSON files under `dir` whose parsed canonical name matches the
+/// resolved model (by name or alias) are deleted. Model weights and store
+/// blobs are never touched.
+pub fn remove_registry_manifest(
+    dir: impl AsRef<Path>,
+    reference: &str,
+) -> Result<RemovalReport, RegistryError> {
+    let dir = dir.as_ref();
+    let mut files = Vec::new();
+    collect_json_files(dir, &mut files)?;
+    // Parse each file independently. A broken or unrelated JSON file must not
+    // prevent removing a valid manifest, and is never deleted.
+    let mut manifests = Vec::new();
+    for path in files {
+        let oversized = std::fs::metadata(&path)
+            .map(|metadata| metadata.len() > 8 * 1024 * 1024)
+            .unwrap_or(true);
+        if oversized {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if let Ok(manifest) = serde_json::from_slice::<RepoManifest>(&bytes) {
+            manifests.push((path, manifest));
+        }
+    }
+    let Some(target) = manifests
+        .iter()
+        .find(|(_, manifest)| {
+            manifest.name == reference || manifest.aliases.iter().any(|alias| alias == reference)
+        })
+        .map(|(_, manifest)| manifest.name.clone())
+    else {
+        return Ok(RemovalReport {
+            dir: dir.to_path_buf(),
+            model: None,
+            removed: 0,
+        });
+    };
+
+    let mut removed = 0usize;
+    for (path, manifest) in manifests {
+        if manifest.name != target {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(RegistryError::Io { path, source });
+            }
+        }
+    }
+    Ok(RemovalReport {
+        dir: dir.to_path_buf(),
+        model: Some(target),
+        removed,
+    })
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), RegistryError> {
+    use std::io::Write;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("manifest.json");
+    let temp = path.with_file_name(format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    })();
+    if let Err(source) = result {
+        let _ = std::fs::remove_file(&temp);
+        return Err(RegistryError::Io {
+            path: path.to_path_buf(),
+            source,
+        });
+    }
+    Ok(())
+}
+
+fn collect_json_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), RegistryError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(RegistryError::Io {
+                path: dir.to_path_buf(),
+                source,
+            });
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|source| RegistryError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|source| RegistryError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if file_type.is_dir() {
+            collect_json_files(&path, out)?;
+        } else if file_type.is_file()
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn serialized(manifest: &RepoManifest) -> Result<Vec<u8>, RegistryError> {
@@ -187,5 +325,31 @@ mod tests {
         let mut bad = manifest();
         bad.name = "../escape".to_owned();
         assert!(export_registry(&[bad], temp_dir(), false).is_err());
+    }
+
+    #[test]
+    fn removes_a_manifest_by_name_or_alias() {
+        let dir = temp_dir();
+        export_registry(&[manifest()], &dir, false).expect("export");
+        let report = remove_registry_manifest(&dir, "mock:latest").expect("remove by alias");
+        assert_eq!(report.model.as_deref(), Some("mock"));
+        assert_eq!(report.removed, 1);
+        assert!(!dir.join("v1/library/mock/manifests/mock.json").exists());
+
+        let report = remove_registry_manifest(&dir, "mock").expect("second remove");
+        assert_eq!(report.removed, 0);
+        assert_eq!(report.model, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn removal_never_touches_unrelated_files() {
+        let dir = temp_dir();
+        export_registry(&[manifest()], &dir, false).expect("export");
+        let keep = dir.join("notes.json");
+        std::fs::write(&keep, br#"{"not":"a manifest"}"#).expect("write");
+        remove_registry_manifest(&dir, "mock").expect("remove");
+        assert!(keep.is_file());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
