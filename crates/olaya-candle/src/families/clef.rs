@@ -779,9 +779,14 @@ fn answer_from_probabilities(
     option_ids: &[String],
     probabilities: &[f64],
 ) -> Result<Answer, DecisionError> {
-    if option_ids.len() != probabilities.len() || probabilities.is_empty() {
+    if option_ids.len() != probabilities.len()
+        || probabilities.is_empty()
+        || probabilities
+            .iter()
+            .any(|probability| !probability.is_finite() || *probability < 0.0)
+    {
         return Err(DecisionError::invalid(
-            "clef returned the wrong number of option probabilities",
+            "clef returned invalid option probabilities",
         ));
     }
     let best = argmax(probabilities);

@@ -111,6 +111,16 @@ impl Qwen3GuardFamily {
                 )));
             }
         }
+        if let Some(extra) = self.decision.questions.keys().find(|id| {
+            !matches!(
+                id.as_str(),
+                "safety" | "unsafe" | "unsafe_strict" | "category"
+            )
+        }) {
+            return Err(ModelError::config(format!(
+                "qwen3guard decision has an unsupported preset question {extra:?}"
+            )));
+        }
         self.check_choice("safety", &safety.labels)?;
         self.check_choice("category", &category.labels)?;
         Ok(())
@@ -367,6 +377,13 @@ impl Qwen3GuardFamily {
                 }
                 "unsafe" => {
                     let (logits, tokens) = safety.as_ref().expect("requested");
+                    if logits.len() != 3 {
+                        return Err(DecisionError::invalid(format!(
+                            "qwen3guard safety head returned {} logits, expected 3",
+                            logits.len()
+                        ))
+                        .into());
+                    }
                     (
                         vec![logsumexp2(logits[0], logits[1]), logits[2]],
                         vec!["false".to_owned(), "true".to_owned()],
@@ -375,13 +392,25 @@ impl Qwen3GuardFamily {
                 }
                 "unsafe_strict" => {
                     let (logits, tokens) = safety.as_ref().expect("requested");
+                    if logits.len() != 3 {
+                        return Err(DecisionError::invalid(format!(
+                            "qwen3guard safety head returned {} logits, expected 3",
+                            logits.len()
+                        ))
+                        .into());
+                    }
                     (
                         vec![logits[0], logsumexp2(logits[1], logits[2])],
                         vec!["false".to_owned(), "true".to_owned()],
                         *tokens,
                     )
                 }
-                other => unreachable!("validated preset question {other}"),
+                other => {
+                    return Err(DecisionError::invalid(format!(
+                        "unsupported qwen3guard preset question {other:?}"
+                    ))
+                    .into());
+                }
             };
             let answer = answer_from_logits(
                 question,

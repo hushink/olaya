@@ -6,6 +6,10 @@ use olaya_core::{DecisionError, TokenEncoder};
 
 use crate::ModelError;
 
+/// Upper bound for a tokenizer JSON file. Real tokenizers are tens of MiB; a
+/// much larger file is treated as malformed rather than loaded into memory.
+const MAX_TOKENIZER_BYTES: u64 = 512 * 1024 * 1024;
+
 /// A `tokenizers::Tokenizer` that implements [`TokenEncoder`].
 ///
 /// Encoding never adds special tokens; families add `[CLS]` / `[SEP]` (or the
@@ -17,7 +21,15 @@ pub struct HfTokenizer {
 
 impl HfTokenizer {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ModelError> {
-        let mut inner = tokenizers::Tokenizer::from_file(path.as_ref())
+        let path = path.as_ref();
+        let metadata = std::fs::metadata(path)?;
+        if metadata.len() > MAX_TOKENIZER_BYTES {
+            return Err(ModelError::Tokenizer(format!(
+                "{} is larger than the {MAX_TOKENIZER_BYTES}-byte tokenizer limit",
+                path.display()
+            )));
+        }
+        let mut inner = tokenizers::Tokenizer::from_file(path)
             .map_err(|error| ModelError::Tokenizer(error.to_string()))?;
         // Some checkpoints bake truncation/padding into tokenizer.json (GLiClass
         // does); families apply their own layout-specific truncation.
