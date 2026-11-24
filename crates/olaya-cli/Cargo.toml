@@ -17,7 +17,9 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-olaya = { version = "0.1.8", path = "../olaya" }
+# The CLI always needs the hosted-catalog client; model families, the Hub, and
+# the HTTP server remain selectable features.
+olaya = { version = "0.1.8", path = "../olaya", default-features = false, features = ["remote"] }
 clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
@@ -29,11 +31,31 @@ toml.workspace = true
 indexmap.workspace = true
 
 [features]
-default = ["serve"]
+default = [
+    "serve",
+    "hub",
+    "laya",
+    "nli",
+    "gliclass",
+    "von",
+    "decima",
+    "qwen3guard",
+    "decision",
+    "kev",
+    "clef",
+]
 serve = ["olaya/serve"]
+hub = ["olaya/hub"]
+laya = ["olaya/laya"]
+nli = ["olaya/nli"]
+gliclass = ["olaya/gliclass"]
+von = ["olaya/von"]
+decima = ["olaya/decima"]
 qwen3guard = ["olaya/qwen3guard"]
+qwen35 = ["olaya/qwen35"]
 decision = ["olaya/decision"]
 kev = ["olaya/kev"]
 clef = ["olaya/clef"]
+all-families = ["olaya/all-families"]
 cuda = ["olaya/cuda"]
 metal = ["olaya/metal"]

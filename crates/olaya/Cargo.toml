@@ -13,7 +13,9 @@ categories = ["science", "api-bindings"]
 [dependencies]
 olaya-core = { version = "0.1.8", path = "../olaya-core" }
 olaya-candle = { version = "0.1.8", path = "../olaya-candle" }
+base64.workspace = true
 candle-core.workspace = true
+url.workspace = true
 candle-nn.workspace = true
 indexmap.workspace = true
 serde.workspace = true

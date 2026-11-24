@@ -15,18 +15,15 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 sha2 = "0.11"
 hex = "0.4"
 url = "2"
-percent-encoding = "2"
 tempfile = "3"
 axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1", "query", "multipart"] }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "signal", "macros", "sync", "time"] }
-tower-http = { version = "0.7", default-features = false, features = ["cors", "trace"] }
+tower-http = { version = "0.7", default-features = false, features = ["cors", "trace", "timeout"] }
 tower = { version = "0.5", features = ["util"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-ruzstd = { version = "0.9", default-features = false, features = ["std"] }
-uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 zip = { version = "9.8.1", default-features = false }
-shaul = { version = "1.2.1" }
+shaul = { version = "1.2.2" }
 candle-core = "0.11.1"
 candle-nn = "0.11.1"
 candle-transformers = "0.11.1"
