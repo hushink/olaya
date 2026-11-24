@@ -478,3 +478,40 @@ async fn local_servers_can_use_a_base_path() {
         .expect("response");
     assert_eq!(server.requests()[0].path, "/gateway/v1/systemone");
 }
+
+#[tokio::test]
+async fn oversized_responses_are_rejected_before_the_body_is_read() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buffer = [0u8; 4096];
+        let _ = stream.read(&mut buffer);
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            olaya_sdk::MAX_RESPONSE_BYTES + 1
+        )
+        .expect("headers");
+    });
+
+    let client = Client::builder()
+        .api_key("test-key")
+        .base_url(format!("http://{address}"))
+        .default_model("test-model")
+        .retry(RetryPolicy::disabled())
+        .build()
+        .expect("client");
+    let error = client
+        .system_one("text", single_question())
+        .await
+        .expect_err("oversized response");
+    assert!(
+        matches!(error, Error::ResponseTooLarge { .. }),
+        "unexpected error: {error}"
+    );
+    server.join().expect("server");
+}

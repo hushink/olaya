@@ -16,7 +16,7 @@ use crate::request::{Asset, Questions, SystemOneRequest};
 use crate::retry::RetryPolicy;
 use crate::transport::{
     DANGER_ZONE_IMAGES, DANGER_ZONE_LONG_CONTEXT, api_error, decode_response, encode_json_body,
-    request_id, requires_image_header,
+    read_body, request_id, requires_image_header,
 };
 
 /// An asynchronous client for the TypeSafe API.
@@ -323,10 +323,7 @@ impl Client {
         let status = response.status();
         let headers = response.headers().clone();
         let request_id = request_id(&headers);
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|source| self.transport_error("POST", endpoint, timeout, source))?;
+        let bytes = read_body(response, "POST", endpoint, timeout).await?;
         if !status.is_success() {
             return Err(Error::Api(Box::new(api_error(
                 status, "POST", endpoint, &headers, &bytes, 1,
@@ -397,10 +394,7 @@ impl Client {
         let status = response.status();
         let headers = response.headers().clone();
         let request_id = request_id(&headers);
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|source| self.transport_error("GET", endpoint, timeout, source))?;
+        let bytes = read_body(response, "GET", endpoint, timeout).await?;
         if !status.is_success() {
             return Err(Error::Api(Box::new(api_error(
                 status, "GET", endpoint, &headers, &bytes, 1,

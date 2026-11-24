@@ -132,7 +132,8 @@ pub use question::{
 pub use request::{
     Asset, Assets, MAX_CHOICE_OPTIONS, MAX_SCORE_LEVELS, Questions, SystemOneRequest,
 };
-pub use retry::RetryPolicy;
+pub use retry::{MAX_RETRY_AFTER, RetryPolicy};
+pub use transport::MAX_RESPONSE_BYTES;
 
 pub use reqwest::StatusCode;
 

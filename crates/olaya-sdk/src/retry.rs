@@ -6,6 +6,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use reqwest::header::HeaderMap;
 
+/// Upper bound on a server-supplied `Retry-After` delay. A hostile or broken
+/// server must not be able to stall a client indefinitely.
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+
 /// Configuration for retrying failed requests.
 ///
 /// The defaults mirror the official TypeSafe SDK: two retries after the initial
@@ -130,7 +134,10 @@ impl RetryPolicy {
         if self.respect_retry_after
             && let Some(retry_after) = retry_after
         {
-            return retry_after;
+            // Clamp server-controlled delays so `Duration::MAX` (or a huge
+            // value) cannot overflow an `Instant` or sleep for years when the
+            // caller disabled the deadline.
+            return retry_after.min(MAX_RETRY_AFTER);
         }
         self.backoff(retry_index)
     }
@@ -245,6 +252,16 @@ mod tests {
         assert_eq!(
             policy.retry_delay(0, Some(Duration::from_millis(20))),
             Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn hostile_retry_after_values_are_clamped() {
+        let policy = RetryPolicy::default();
+        assert_eq!(policy.retry_delay(0, Some(Duration::MAX)), MAX_RETRY_AFTER);
+        assert_eq!(
+            policy.retry_delay(0, Some(Duration::from_secs(86_400))),
+            MAX_RETRY_AFTER
         );
     }
 

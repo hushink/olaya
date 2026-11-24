@@ -41,6 +41,12 @@ pub enum Error {
         #[source]
         source: Option<Box<reqwest::Error>>,
     },
+    #[error("response from {method} {endpoint} exceeded the {limit}-byte body limit")]
+    ResponseTooLarge {
+        method: &'static str,
+        endpoint: String,
+        limit: usize,
+    },
     #[error(transparent)]
     Api(#[from] Box<ApiError>),
     #[error("could not decode the response from {method} {endpoint}: {source}")]
