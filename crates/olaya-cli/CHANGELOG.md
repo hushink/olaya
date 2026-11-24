@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/hushink/olaya/compare/olaya-cli-v0.1.8...olaya-cli-v0.2.0) - 2026-11-24
+
+### Added
+
+- *(cli)* expose security settings, catalog merge, and model purge
+
+### Other
+
+- document hardening, configuration, and purge behavior
+- *(deps)* refresh shaul and dependency features
+
 ## [0.1.8](https://github.com/hushink/olaya/compare/olaya-cli-v0.1.7...olaya-cli-v0.1.8) - 2026-11-23
 
 ### Fixed

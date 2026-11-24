@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/hushink/olaya/compare/olaya-core-v0.1.8...olaya-core-v0.2.0) - 2026-11-24
+
+### Fixed
+
+- *(core)* validate manifests and harden decision math
+
 ## [0.1.0](https://github.com/hushink/olaya/releases/tag/olaya-core-v0.1.0) - 2026-11-21
 
 ### Added
