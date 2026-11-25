@@ -884,7 +884,7 @@ impl Hub {
         };
 
         // A previous process may have crashed while the sidecar said
-        // `Running`. shaul 1.2.2 refuses to run such a task, so requeue tasks
+        // `Running`. shaul refuses to run such a task, so requeue tasks
         // whose cross-process run lock is free before adding ours.
         engine.requeue_stale().map_err(registry)?;
 

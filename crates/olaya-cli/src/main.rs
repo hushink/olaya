@@ -312,7 +312,7 @@ impl Settings {
             hub.modelscope_endpoint = Some(endpoint.to_owned());
         }
         if let Some(proxy) = file.hub.proxy.as_deref() {
-            // Preserve an explicit empty value: shaul 1.2.2 treats it as
+            // Preserve an explicit empty value: shaul treats it as
             // "bypass ambient proxy environment variables".
             hub.proxy = Some(proxy.trim().to_owned());
         }
