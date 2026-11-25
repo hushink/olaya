@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/hushink/olaya/compare/olaya-v0.2.0...olaya-v0.2.1) - 2026-11-25
+
+### Other
+
+- *(deps)* upgrade shaul to 1.3.0
+
 ## [0.2.0](https://github.com/hushink/olaya/compare/olaya-v0.1.8...olaya-v0.2.0) - 2026-11-24
 
 ### Fixed
